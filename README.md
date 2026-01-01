@@ -1,50 +1,98 @@
-# Luna
+# Luna — AI-Powered Homeschool & Tutoring Platform
 
-**Luna** is a production-grade, AI-powered tutoring and homeschool platform designed to deliver a **live, adaptive virtual teacher** into the home.
+> A live, adaptive, conversational AI teacher bringing the best teachers into the home.
 
-Luna is built **voice-first**, optimized for neurodivergent learners (starting with ADD / ADHD), and focused on *real understanding* rather than content delivery. The system adapts pacing, explanation style, analogies, and reinforcement dynamically based on each student’s needs.
+## Quick Start
 
----
+### Prerequisites
+- .NET 10 LTS
+- Node.js 20+
+- Docker & Docker Compose
+- PostgreSQL 15+ (or via Docker)
 
-## Vision
+### Local Development
 
-The long-term goal of Luna is to create a **live AI teacher** that teaches like a great human tutor — using real-time conversation, cadence, pauses, visual explanations, and continuous adaptation to the student’s learning style and attention.
+```bash
+# Clone the repository
+git clone <repo> && cd luna
 
-Luna prioritizes learning effectiveness, trust, and safety over novelty.
+# Start local services (PostgreSQL, Redis, etc.)
+docker-compose -f docker/compose.local.yml up -d
 
----
+# Backend
+cd src/backend
+dotnet restore
+dotnet build
+dotnet run --project apps/Luna.ApiGateway
 
-## Architecture Overview
+# Frontend (new terminal)
+cd src/frontend/luna-web
+npm install
+npm run dev
+```
 
-- **Backend:** .NET 10 LTS, ASP.NET Core
-- **Frontend:** Vue 3 + TypeScript
-- **Realtime:** WebSockets (voice-first interaction)
-- **Data:** PostgreSQL, Redis
-- **Infrastructure:** Docker, AWS (ECS Fargate)
-- **Observability:** OpenTelemetry
-
-The backend is intentionally designed as a **modular monolith** with clear domain boundaries and versioned contracts, making it **microservices-ready** without premature complexity.
-
----
-
-## Core Domains
-
-- **Identity** — authentication and tenant isolation
-- **Classroom** — real-time teaching sessions and orchestration
-- **Students** — learner profiles and accommodations
-- **Curriculum** — lessons, subjects, and pedagogy
-- **Media** — text-to-speech and speech-to-text providers
+Visit `http://localhost:5173` (frontend) and `http://localhost:5000/api` (backend).
 
 ---
 
-## Current Status
+## Architecture
 
-Early development  
-Initial focus: one student, one subject, voice-first tutoring  
-Teaching intelligence and session orchestration are the core priorities
+Luna is a **modular monolith** with hard module boundaries, designed to become microservices later.
+
+See [docs/architecture/LUNA_CONTEXT.md](docs/architecture/LUNA_CONTEXT.md) for the full architectural vision.
+
+### Core Modules
+- **Luna.Identity** — Authentication & user identity
+- **Luna.Classroom** — Real-time teaching sessions (core domain)
+- **Luna.Students** — Student profiles & learning preferences
+- **Luna.Curriculum** — Lesson definitions & strategies
+- **Luna.Media** — TTS/STT provider abstraction
 
 ---
 
-## Documentation
+## Development
 
-Key architectural decisions and project context live in:
+### Backend
+- .NET 10 LTS + ASP.NET Core Minimal APIs
+- WebSockets for real-time sessions
+- PostgreSQL (per-module schemas)
+- Redis for session state
+
+### Frontend
+- Vue 3 + TypeScript + Vite
+- Voice-first UX (TTS now, STT next)
+- ADHD-friendly UI patterns
+
+---
+
+## File Structure
+
+```
+luna/
+├── docs/architecture/         # Design decisions
+├── docker/                    # Local dev compose files
+├── infra/                     # Infrastructure (Terraform, localstack)
+└── src/
+    ├── backend/               # .NET services
+    │   ├── shared/            # Contracts & shared kernel
+    │   ├── services/          # Domain modules
+    │   ├── apps/              # Luna.ApiGateway (entry point)
+    │   └── tests/             # Unit & integration tests
+    └── frontend/              # Vue 3 application
+```
+
+---
+
+## Key Principles
+
+✅ **Modular Monolith** — One deployable host, clear module boundaries  
+✅ **Microservices Ready** — Each module can become its own service  
+✅ **Observable & Auditable** — All events logged, all AI output inspectable  
+✅ **Safety First** — Built for minors (parent visibility, kill-switch, content boundaries)  
+✅ **Learning Effectiveness** — Not novelty, but mastery  
+
+---
+
+## License
+
+(TBD)

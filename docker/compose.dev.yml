@@ -1,0 +1,41 @@
+version: '3.9'
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: luna-postgres-dev
+    environment:
+      POSTGRES_USER: luna_dev
+      POSTGRES_PASSWORD: dev_password
+      POSTGRES_DB: luna_dev
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_dev_data:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7-alpine
+    container_name: luna-redis-dev
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_dev_data:/data
+
+  luna-api:
+    build:
+      context: ../src/backend
+      dockerfile: ../docker/Dockerfile.api
+    container_name: luna-api-dev
+    ports:
+      - "5000:5000"
+    environment:
+      ASPNETCORE_ENVIRONMENT: Development
+      ConnectionStrings__DefaultConnection: "Host=postgres;Port=5432;Database=luna_dev;Username=luna_dev;Password=dev_password"
+      Redis__Connection: "redis:6379"
+    depends_on:
+      - postgres
+      - redis
+
+volumes:
+  postgres_dev_data:
+  redis_dev_data:
