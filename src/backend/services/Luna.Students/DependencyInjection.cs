@@ -1,6 +1,7 @@
 namespace Luna.Students;
 
 using Microsoft.Extensions.DependencyInjection;
+using Luna.Students.Persistence;
 
 /// <summary>
 /// Dependency injection configuration for Luna.Students module.
@@ -13,7 +14,7 @@ public static class DependencyInjection
         // Student profile repository
         // Learning preferences service
         // Attention metadata tracking
-
+        services.AddScoped<IStudentRepository, StudentRepository>();
         return services;
     }
 }

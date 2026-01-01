@@ -5,8 +5,8 @@ namespace Luna.Students.Profiles;
 /// </summary>
 public sealed class StudentProfile
 {
-    public string StudentId { get; set; }
-    public string Name { get; set; }
+    public required string StudentId { get; init; }
+    public required string Name { get; init; }
     public StudentLearningPreferences Preferences { get; set; } = new();
     public ADHDAccommodations? ADHDAccommodations { get; set; }
     public DateTime CreatedAt { get; set; }

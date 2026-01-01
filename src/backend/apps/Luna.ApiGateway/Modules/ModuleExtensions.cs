@@ -14,10 +14,10 @@ using Microsoft.Extensions.DependencyInjection;
 /// </summary>
 public static class ModuleExtensions
 {
-    public static IServiceCollection AddAllModules(this IServiceCollection services)
+    public static IServiceCollection AddAllModules(this IServiceCollection services, IConfiguration config)
     {
         services
-            .AddIdentityModule()
+            .AddIdentityModule(config)
             .AddClassroomModule()
             .AddStudentsModule()
             .AddCurriculumModule()

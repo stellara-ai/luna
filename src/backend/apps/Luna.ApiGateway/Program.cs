@@ -1,16 +1,19 @@
 using Microsoft.AspNetCore.HttpOverrides;
+using Luna.Identity;
+using Luna.Classroom;
+using Luna.Students;
+using Luna.Curriculum;
+using Luna.Media;
+using Luna.ApiGateway.Modules;
+using Luna.Classroom.Endpoints;
+using Luna.Students.Persistence;
 
 var builder = WebApplication.CreateBuilder(args);
 
 // ------------------------------
 // Services
 // ------------------------------
-builder.Services
-    .AddIdentityModule(builder.Configuration)
-    .AddClassroomModule(builder.Configuration)
-    .AddStudentsModule(builder.Configuration)
-    .AddCurriculumModule(builder.Configuration)
-    .AddMediaModule(builder.Configuration);
+builder.Services.AddAllModules(builder.Configuration);
 
 // OpenAPI (keep dev-only mapping later)
 builder.Services.AddOpenApi();
@@ -48,8 +51,7 @@ builder.Services.Configure<ForwardedHeadersOptions>(options =>
         ForwardedHeaders.XForwardedProto |
         ForwardedHeaders.XForwardedHost;
 
-    // For production, consider restricting KnownProxies/KnownNetworks.
-    options.KnownNetworks.Clear();
+    options.KnownIPNetworks.Clear();
     options.KnownProxies.Clear();
 });
 
@@ -103,19 +105,17 @@ app.MapGet("/error", () => Results.Problem("An unexpected error occurred."))
    .ExcludeFromDescription();
 
 // Map module endpoints (map ALL modules here)
-app.MapIdentityEndpoints();
+//app.MapIdentityEndpoints();
 app.MapClassroomEndpoints();
-app.MapStudentsEndpoints();
-app.MapCurriculumEndpoints();
-app.MapMediaEndpoints();
+//app.MapStudentsEndpoints();
+//app.MapCurriculumEndpoints();
+//app.MapMediaEndpoints();
 
 // Health endpoints (commonly used naming)
 app.MapGet("/healthz", () => Results.Ok(new { status = "ok" }))
-   .WithName("Healthz")
-   .WithOpenApi();
+   .WithName("Healthz");
 
 app.MapGet("/readyz", () => Results.Ok(new { status = "ready" }))
-   .WithName("Readyz")
-   .WithOpenApi();
+   .WithName("Readyz");
 
 app.Run();

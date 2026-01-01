@@ -1,37 +1,67 @@
 namespace Luna.Classroom.Sessions;
 
-/// <summary>
-/// Active classroom session state.
-/// Ephemeral during lesson; stored for history and auditability.
-/// </summary>
+using Luna.SharedKernel.Time;
+
 public sealed class ClassroomSession
 {
-    public string SessionId { get; set; }
-    public string StudentId { get; set; }
-    public string LessonId { get; set; }
-    public DateTime StartedAt { get; set; }
-    public DateTime? EndedAt { get; set; }
-    public SessionState State { get; set; }
-    public List<SessionEvent> Events { get; set; } = new();
+    public string SessionId { get; private set; }
+    public string StudentId { get; private set; }
+    public string LessonId { get; private set; }
 
-    private ClassroomSession() { }
+    public DateTime StartedAt { get; private set; }
+    public DateTime? EndedAt { get; private set; }
 
-    public static ClassroomSession Create(string studentId, string lessonId) =>
-        new()
+    public SessionState State { get; private set; }
+
+    public List<SessionEvent> Events { get; } = new();
+
+    private ClassroomSession()
+    {
+        SessionId = string.Empty;
+        StudentId = string.Empty;
+        LessonId = string.Empty;
+        StartedAt = default;
+        State = SessionState.Created;
+    }
+
+    public static ClassroomSession Create(string studentId, string lessonId, SystemClock clock)
+    {
+        return new ClassroomSession
         {
             SessionId = Guid.NewGuid().ToString("N"),
             StudentId = studentId,
             LessonId = lessonId,
-            StartedAt = DateTime.UtcNow,
+            StartedAt = clock.UtcNow,
             State = SessionState.Active
         };
+    }
 
-    public void RecordEvent(SessionEvent evt) => Events.Add(evt);
+    public void RecordEvent(SessionEvent evt, SystemClock clock)
+    {
+        if (evt.Timestamp == default)
+        {
+            evt.Timestamp = clock.UtcNow;
+        }
 
-    public void End(string reason)
+        Events.Add(evt);
+    }
+
+    public void End(string reason, SystemClock clock)
     {
         State = SessionState.Ended;
-        EndedAt = DateTime.UtcNow;
+        EndedAt = clock.UtcNow;
+
+        var evt = new SessionEvent
+        {
+            Sequence = Events.Count + 1,
+            EventType = "session.ended",
+            Data = new Dictionary<string, object>
+            {
+                ["reason"] = reason
+            }
+        };
+
+        RecordEvent(evt, clock);
     }
 }
 
@@ -43,13 +73,10 @@ public enum SessionState
     Ended
 }
 
-/// <summary>
-/// Immutable session event for append-only audit log.
-/// </summary>
 public sealed class SessionEvent
 {
     public int Sequence { get; set; }
-    public string EventType { get; set; }
+    public required string EventType { get; init; }
     public DateTime Timestamp { get; set; }
     public Dictionary<string, object> Data { get; set; } = new();
 }

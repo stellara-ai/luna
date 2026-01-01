@@ -1,19 +1,15 @@
 namespace Luna.Classroom.Endpoints;
 
 using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
 
-/// <summary>
-/// HTTP endpoints for classroom operations.
-/// WebSocket upgrade happens here; real-time messages on upgraded connection.
-/// </summary>
 public static class ClassroomEndpoints
 {
     public static void MapClassroomEndpoints(this WebApplication app)
     {
         var group = app.MapGroup("/api/classroom")
-            .WithName("Classroom")
-            .WithOpenApi();
+            .WithName("Classroom");
 
         group.MapPost("/sessions", CreateSessionAsync)
             .WithName("CreateSession")
@@ -21,36 +17,21 @@ public static class ClassroomEndpoints
 
         group.MapGet("/sessions/{sessionId}", GetSessionAsync)
             .WithName("GetSession")
-            .Produces<GetSessionResponse>();
+            .Produces<GetSessionResponse>(StatusCodes.Status200OK);
 
         group.MapPost("/sessions/{sessionId}/end", EndSessionAsync)
             .WithName("EndSession")
             .Produces(StatusCodes.Status204NoContent);
     }
 
-    private static async Task<CreateSessionResponse> CreateSessionAsync(
-        CreateSessionRequest request,
-        CancellationToken ct)
-    {
-        // Create new session
-        throw new NotImplementedException();
-    }
+    private static Task<CreateSessionResponse> CreateSessionAsync(CreateSessionRequest request, CancellationToken ct)
+        => throw new NotImplementedException();
 
-    private static async Task<GetSessionResponse> GetSessionAsync(
-        string sessionId,
-        CancellationToken ct)
-    {
-        // Retrieve session
-        throw new NotImplementedException();
-    }
+    private static Task<GetSessionResponse> GetSessionAsync(string sessionId, CancellationToken ct)
+        => throw new NotImplementedException();
 
-    private static async Task EndSessionAsync(
-        string sessionId,
-        CancellationToken ct)
-    {
-        // End session
-        throw new NotImplementedException();
-    }
+    private static Task EndSessionAsync(string sessionId, CancellationToken ct)
+        => throw new NotImplementedException();
 }
 
 public record CreateSessionRequest(string StudentId, string LessonId);

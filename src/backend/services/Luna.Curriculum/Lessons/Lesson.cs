@@ -5,10 +5,10 @@ namespace Luna.Curriculum.Lessons;
 /// </summary>
 public sealed class Lesson
 {
-    public string LessonId { get; set; }
-    public string Subject { get; set; }
-    public string Title { get; set; }
-    public string Description { get; set; }
+    public required string LessonId { get; init; }
+    public required string Subject { get; init; }
+    public required string Title { get; init; }
+    public required string Description { get; init; }
     public int GradeLevel { get; set; }
     public List<LearningObjective> Objectives { get; set; } = new();
     public List<TeachingStrategy> Strategies { get; set; } = new();
@@ -17,8 +17,8 @@ public sealed class Lesson
 
 public sealed class LearningObjective
 {
-    public string ObjectiveId { get; set; }
-    public string Description { get; set; }
+    public required string ObjectiveId { get; init; }
+    public required string Description { get; init; }
     public ObjectiveLevel Level { get; set; }
 }
 
@@ -26,9 +26,9 @@ public enum ObjectiveLevel { Remember, Understand, Apply, Analyze, Evaluate, Cre
 
 public sealed class TeachingStrategy
 {
-    public string StrategyId { get; set; }
-    public string Name { get; set; }
-    public string Description { get; set; }
+    public required string StrategyId { get; init; }
+    public required string Name { get; init; }
+    public required string Description { get; init; }
     public List<string> ApplicableObjectives { get; set; } = new();
     public Dictionary<string, object>? Parameters { get; set; }
 }

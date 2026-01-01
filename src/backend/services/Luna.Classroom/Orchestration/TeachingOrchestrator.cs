@@ -27,10 +27,10 @@ public sealed class TeachingOrchestrator : ITeachingOrchestrator
 /// </summary>
 public sealed class TeachingContext
 {
-    public string StudentId { get; set; }
-    public string LessonId { get; set; }
-    public string SessionId { get; set; }
-    public string StudentInput { get; set; }
+    public required string StudentId { get; init; }
+    public required string LessonId { get; init; }
+    public required string SessionId { get; init; }
+    public required string StudentInput { get; init; }
     public Dictionary<string, object>? StudentMetadata { get; set; }
 }
 
@@ -39,7 +39,7 @@ public sealed class TeachingContext
 /// </summary>
 public sealed class TeachingAction
 {
-    public string ActionType { get; set; } // "explain", "question", "feedback", etc.
-    public string Content { get; set; }
+    public required string ActionType { get; init; } // "explain", "question", "feedback", etc.
+    public required string Content { get; init; }
     public Dictionary<string, object>? Metadata { get; set; }
 }

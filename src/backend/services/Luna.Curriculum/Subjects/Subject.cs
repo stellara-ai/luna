@@ -5,17 +5,17 @@ namespace Luna.Curriculum.Subjects;
 /// </summary>
 public sealed class Subject
 {
-    public string SubjectId { get; set; }
-    public string Name { get; set; }
-    public string Description { get; set; }
+    public required string SubjectId { get; init; }
+    public required string Name { get; init; }
+    public required string Description { get; init; }
     public List<string> UnitIds { get; set; } = new();
 }
 
 public sealed class Unit
 {
-    public string UnitId { get; set; }
-    public string SubjectId { get; set; }
-    public string Name { get; set; }
+    public required string UnitId { get; init; }
+    public required string SubjectId { get; init; }
+    public required string Name { get; init; }
     public List<string> LessonIds { get; set; } = new();
     public List<string> PrerequisiteLessonIds { get; set; } = new();
 }
