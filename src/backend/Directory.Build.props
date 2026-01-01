@@ -7,8 +7,13 @@
     <NoWarn>$(NoWarn);CA1050;CA1707;CA1711;CA1712;CA1724</NoWarn>
   </PropertyGroup>
 
-  <!-- Analyzers -->
+  <!-- Analyzers & shared infra packages (pinned to existing versions) -->
   <ItemGroup>
-    <PackageReference Include="Microsoft.CodeAnalysis.NetAnalyzers" Version="10.0.0" PrivateAssets="All" />
+    <PackageReference Include="Microsoft.CodeAnalysis.NetAnalyzers"
+                      Version="10.0.100"
+                      PrivateAssets="all" />
+
+    <PackageReference Include="StackExchange.Redis"
+                      Version="2.8.22" />
   </ItemGroup>
 </Project>
