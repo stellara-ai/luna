@@ -9,16 +9,30 @@ public interface ITeachingOrchestrator
     Task<TeachingAction> SelectNextActionAsync(TeachingContext context, CancellationToken ct);
 }
 
+public static class TeachingActionTypes
+{
+    public const string Explain = "explain";
+    public const string AskQuestion = "question";
+    public const string Feedback = "feedback";
+}
+
 public sealed class TeachingOrchestrator : ITeachingOrchestrator
 {
     public async Task<TeachingAction> SelectNextActionAsync(TeachingContext context, CancellationToken ct)
     {
-        // 1. Interpret student input (understanding + attention)
-        // 2. Check lesson state
-        // 3. Select teaching strategy (from Curriculum)
-        // 4. Return action for execution
-        await Task.Delay(0, ct);
-        throw new NotImplementedException();
+        // Placeholder orchestration: echo student input as teacher response.
+        await Task.Yield();
+
+        return new TeachingAction
+        {
+            ActionType = TeachingActionTypes.Explain,
+            Content = $"I heard you say: '{context.StudentInput}'. Let's keep going on lesson {context.LessonId}.",
+            Metadata = new()
+            {
+                ["sessionId"] = context.SessionId,
+                ["studentId"] = context.StudentId
+            }
+        };
     }
 }
 
@@ -31,7 +45,7 @@ public sealed class TeachingContext
     public required string LessonId { get; init; }
     public required string SessionId { get; init; }
     public required string StudentInput { get; init; }
-    public Dictionary<string, object>? StudentMetadata { get; set; }
+    public Dictionary<string, object> StudentMetadata { get; init; } = new();
 }
 
 /// <summary>
@@ -39,7 +53,7 @@ public sealed class TeachingContext
 /// </summary>
 public sealed class TeachingAction
 {
-    public required string ActionType { get; init; } // "explain", "question", "feedback", etc.
+    public string ActionType { get; init; } = TeachingActionTypes.Explain;
     public required string Content { get; init; }
-    public Dictionary<string, object>? Metadata { get; set; }
+    public Dictionary<string, object> Metadata { get; init; } = new();
 }

@@ -24,7 +24,7 @@ public sealed class ClassroomSession
         State = SessionState.Created;
     }
 
-    public static ClassroomSession Create(string studentId, string lessonId, SystemClock clock)
+    public static ClassroomSession Create(string studentId, string lessonId, ISystemClock clock)
     {
         return new ClassroomSession
         {
@@ -36,8 +36,9 @@ public sealed class ClassroomSession
         };
     }
 
-    public void RecordEvent(SessionEvent evt, SystemClock clock)
+    public void RecordEvent(SessionEvent evt, ISystemClock clock)
     {
+        evt.Sequence = Events.Count + 1;
         if (evt.Timestamp == default)
         {
             evt.Timestamp = clock.UtcNow;
@@ -46,7 +47,7 @@ public sealed class ClassroomSession
         Events.Add(evt);
     }
 
-    public void End(string reason, SystemClock clock)
+    public void End(string reason, ISystemClock clock)
     {
         State = SessionState.Ended;
         EndedAt = clock.UtcNow;

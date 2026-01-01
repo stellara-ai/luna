@@ -28,6 +28,7 @@ public class TeacherResponsePayload : WsPayload
     public ResponseType Type { get; set; }
     public string? AudioChunkBase64 { get; set; }
     public bool IsStreaming { get; set; }
+    public Dictionary<string, object> Metadata { get; set; } = new();
 }
 
 public enum ResponseType

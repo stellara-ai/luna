@@ -2,6 +2,7 @@ using Microsoft.AspNetCore.HttpOverrides;
 using Luna.ApiGateway.Modules;
 using Luna.Classroom.Endpoints;
 using Microsoft.OpenApi;
+using Luna.SharedKernel.Time;
 
 
 var builder = WebApplication.CreateBuilder(args);
@@ -10,6 +11,7 @@ var builder = WebApplication.CreateBuilder(args);
 // Services
 // ------------------------------
 builder.Services.AddAllModules(builder.Configuration);
+builder.Services.AddSingleton<ISystemClock, SystemClock>();
 
 // OpenAPI (keep dev-only mapping later)
 builder.Services.AddOpenApi(options =>
@@ -59,6 +61,7 @@ var app = builder.Build();
 // ------------------------------
 // Middleware (order matters)
 // ------------------------------
+app.UseWebSockets();
 app.UseForwardedHeaders();
 
 // For dev only; in prod use exception handler + HSTS.

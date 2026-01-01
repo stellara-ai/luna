@@ -21,5 +21,5 @@ public abstract class WsPayload
 {
     public string? SessionId { get; set; }
     public string? UserId { get; set; }
-    public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+    public DateTime CreatedAt { get; set; }
 }

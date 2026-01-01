@@ -11,8 +11,8 @@ public static class DependencyInjection
     public static IServiceCollection AddClassroomModule(this IServiceCollection services)
     {
         // Classroom-owned services only
-        services.AddScoped<TeachingOrchestrator>();
-        services.AddScoped<ClassroomWebSocketHandler>();
+        services.AddScoped<ITeachingOrchestrator, TeachingOrchestrator>();
+        services.AddScoped<IWebSocketHandler, ClassroomWebSocketHandler>();
         services.AddScoped<ISessionRepository, SessionRepository>();
 
         return services;
