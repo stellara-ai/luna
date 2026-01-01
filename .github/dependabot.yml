@@ -1,0 +1,36 @@
+version: 2
+enable-auto-merge: true
+
+updates:
+  # .NET dependencies
+  - package-ecosystem: "nuget"
+    directory: "/src/backend"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "03:00"
+    labels: ["dependencies", "backend"]
+    allow:
+      - dependency-type: "production"
+      - dependency-type: "development"
+
+  # Frontend dependencies
+  - package-ecosystem: "npm"
+    directory: "/src/frontend/luna-web"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "03:00"
+    labels: ["dependencies", "frontend"]
+    allow:
+      - dependency-type: "production"
+      - dependency-type: "development"
+
+  # GitHub Actions
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "04:00"
+    labels: ["ci"]

@@ -95,4 +95,5 @@ luna/
 
 ## License
 
-(TBD)
+This project is proprietary software owned by Stellara AI LLC.  
+All rights reserved.
