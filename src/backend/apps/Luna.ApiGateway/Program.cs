@@ -1,12 +1,8 @@
 using Microsoft.AspNetCore.HttpOverrides;
-using Luna.Identity;
-using Luna.Classroom;
-using Luna.Students;
-using Luna.Curriculum;
-using Luna.Media;
 using Luna.ApiGateway.Modules;
 using Luna.Classroom.Endpoints;
-using Luna.Students.Persistence;
+using Microsoft.OpenApi;
+
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -16,7 +12,10 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddAllModules(builder.Configuration);
 
 // OpenAPI (keep dev-only mapping later)
-builder.Services.AddOpenApi();
+builder.Services.AddOpenApi(options =>
+{
+    options.OpenApiVersion = OpenApiSpecVersion.OpenApi3_0;
+});
 
 // CORS: allow-all ONLY for dev; in prod use allowed origins from config
 builder.Services.AddCors(options =>
