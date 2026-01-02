@@ -38,11 +38,13 @@ public sealed class ClassroomSession
 
     public void RecordEvent(SessionEvent evt, ISystemClock clock)
     {
-        evt.Sequence = Events.Count + 1;
+        // Sequence: ensure monotonic, 1-based
+        if (evt.Sequence <= 0)
+            evt.Sequence = Events.Count + 1;
+
+        // Timestamp: ensure always set
         if (evt.Timestamp == default)
-        {
             evt.Timestamp = clock.UtcNow;
-        }
 
         Events.Add(evt);
     }
@@ -52,17 +54,14 @@ public sealed class ClassroomSession
         State = SessionState.Ended;
         EndedAt = clock.UtcNow;
 
-        var evt = new SessionEvent
+        RecordEvent(new SessionEvent
         {
-            Sequence = Events.Count + 1,
             EventType = "session.ended",
             Data = new Dictionary<string, object>
             {
                 ["reason"] = reason
             }
-        };
-
-        RecordEvent(evt, clock);
+        }, clock);
     }
 }
 
