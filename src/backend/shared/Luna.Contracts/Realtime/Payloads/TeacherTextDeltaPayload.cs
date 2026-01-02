@@ -33,7 +33,7 @@ public sealed class TeacherTextDeltaPayload : WsPayload
     /// <summary>
     /// True when this is the final text delta for the turn.
     /// </summary>
-    public bool IsFinal { get; init; }
+    public required bool IsFinal { get; init; }
 
     /// <summary>
     /// Optional: if you later support edits, you can set Operation=Replace with a Range.

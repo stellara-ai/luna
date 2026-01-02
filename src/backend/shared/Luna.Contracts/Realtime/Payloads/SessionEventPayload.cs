@@ -9,5 +9,4 @@ public class SessionEventPayload : WsPayload
 {
     public string EventType { get; set; } = string.Empty;
     public Dictionary<string, object> Data { get; set; } = new();
-    public int SequenceNumber { get; set; }
 }

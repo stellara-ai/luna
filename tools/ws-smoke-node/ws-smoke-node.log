@@ -1,0 +1,59 @@
+API Base URL: http://localhost:5050
+Creating classroom session...
+SessionId: f02a982f0e2647eb8d9cde7480d95a0d
+WS URL:    ws://localhost:5050/ws/classroom/sessions/f02a982f0e2647eb8d9cde7480d95a0d
+
+Connected: ws://localhost:5050/ws/classroom/sessions/f02a982f0e2647eb8d9cde7480d95a0d
+
+RECV (connected batch):
+- v1.classroom.session_event  seq=1 corr=437bb33ea25c49c4b6970f547d6d229f
+
+First connected message (full):
+{
+  "messageId": "2a5d8b3937114ab8a9eb20eee8ba3641",
+  "correlationId": "437bb33ea25c49c4b6970f547d6d229f",
+  "messageType": "v1.classroom.session_event",
+  "timestamp": "2026-01-02T17:50:22.00654Z",
+  "sequenceNumber": 1,
+  "payload": {
+    "eventType": "session.connected",
+    "data": {
+      "sessionId": "f02a982f0e2647eb8d9cde7480d95a0d"
+    },
+    "sessionId": "f02a982f0e2647eb8d9cde7480d95a0d",
+    "userId": null,
+    "createdAt": "2026-01-02T17:50:22.006538Z"
+  }
+}
+
+SEND (session_start)...
+RECV (started batch):
+- v1.classroom.session_event  seq=2 corr=7c538c1ba0ee4c728152370775cdaab3
+
+Started message (full):
+{
+  "messageId": "ddef16accdf9490ebf109cb61b43f3fc",
+  "correlationId": "7c538c1ba0ee4c728152370775cdaab3",
+  "messageType": "v1.classroom.session_event",
+  "timestamp": "2026-01-02T17:50:22.012705Z",
+  "sequenceNumber": 2,
+  "payload": {
+    "eventType": "session.started",
+    "data": {
+      "lessonId": "lesson-node"
+    },
+    "sessionId": "f02a982f0e2647eb8d9cde7480d95a0d",
+    "userId": null,
+    "createdAt": "2026-01-02T17:50:22.0127Z"
+  }
+}
+
+SEND (student_input)...
+RECV (reply batch):
+- v1.classroom.teacher_turn_start  seq=3 corr=7c538c1ba0ee4c728152370775cdaab3 turnId=dd4499646003449bb155e1c023e80821 offsetMs=0
+- v1.classroom.teacher_text_delta  seq=4 corr=7c538c1ba0ee4c728152370775cdaab3 turnId=dd4499646003449bb155e1c023e80821 offsetMs=0
+- v1.classroom.teacher_text_delta  seq=5 corr=7c538c1ba0ee4c728152370775cdaab3 turnId=dd4499646003449bb155e1c023e80821 offsetMs=0
+- v1.classroom.teacher_text_delta  seq=6 corr=7c538c1ba0ee4c728152370775cdaab3 turnId=dd4499646003449bb155e1c023e80821 offsetMs=0
+- v1.classroom.teacher_turn_end  seq=7 corr=7c538c1ba0ee4c728152370775cdaab3 turnId=dd4499646003449bb155e1c023e80821 offsetMs=0
+
+✅ WS streaming-ready smoke test passed.

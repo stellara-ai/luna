@@ -16,6 +16,7 @@ using Luna.Contracts.Realtime;
 using Luna.Contracts.Realtime.Payloads;
 using Luna.SharedKernel.Time;
 using Microsoft.Extensions.Logging;
+using System.Diagnostics;
 
 /// <summary>
 /// WebSocket handler for real-time classroom communication.
@@ -37,6 +38,12 @@ public sealed class ClassroomWebSocketHandler : IWebSocketHandler
         PropertyNameCaseInsensitive = true,
         Converters = { new JsonStringEnumConverter(JsonNamingPolicy.CamelCase) }
     };
+
+    private sealed class SequenceCounter
+    {
+        public int Value { get; set; }
+        public int Next() => ++Value; // 1-based
+    }
 
     private sealed record RawEnvelope(
         string? MessageId,
@@ -68,6 +75,8 @@ public sealed class ClassroomWebSocketHandler : IWebSocketHandler
             return;
         }
 
+        var seq = new SequenceCounter();
+
         // Mark connection event
         session.RecordEvent(new SessionEvent
         {
@@ -85,8 +94,7 @@ public sealed class ClassroomWebSocketHandler : IWebSocketHandler
             Data = new Dictionary<string, object>
             {
                 ["sessionId"] = sessionId
-            },
-            SequenceNumber = session.Events.Count
+            }
         };
 
         var connectedEnvelope = BuildEnvelope(
@@ -94,7 +102,7 @@ public sealed class ClassroomWebSocketHandler : IWebSocketHandler
             WsTypes.SessionEvent,
             connectedPayload,
             correlationId: null,
-            sequence: session.Events.Count);
+            sequence: seq.Next());
 
         var connectedBytes = JsonSerializer.SerializeToUtf8Bytes(connectedEnvelope, _serializerOptions);
         await socket.SendAsync(connectedBytes, WebSocketMessageType.Text, true, ct);
@@ -128,7 +136,7 @@ public sealed class ClassroomWebSocketHandler : IWebSocketHandler
             var rawMessage = builder.ToString();
             builder.Clear();
 
-            var responses = await HandleMessageAsync(session, rawMessage, ct);
+            var responses = await HandleMessageAsync(session, rawMessage, seq, ct);
             foreach (var response in responses)
             {
                 var payload = JsonSerializer.SerializeToUtf8Bytes(response, _serializerOptions);
@@ -140,6 +148,7 @@ public sealed class ClassroomWebSocketHandler : IWebSocketHandler
     private async Task<IEnumerable<object>> HandleMessageAsync(
         ClassroomSession session,
         string rawMessage,
+        SequenceCounter seq,
         CancellationToken ct)
     {
         RawEnvelope? rawEnvelope;
@@ -179,10 +188,10 @@ public sealed class ClassroomWebSocketHandler : IWebSocketHandler
         switch (rawEnvelope.MessageType)
         {
             case WsTypes.SessionStart:
-                return await HandleSessionStartAsync(session, rawEnvelope, correlationId, ct);
+                return await HandleSessionStartAsync(session, rawEnvelope, correlationId, seq, ct);
 
             case WsTypes.StudentInput:
-                return await HandleStudentInputAsync(session, rawEnvelope, correlationId, ct);
+                return await HandleStudentInputAsync(session, rawEnvelope, correlationId, seq, ct);
 
             default:
                 _logger.LogWarning(
@@ -194,7 +203,7 @@ public sealed class ClassroomWebSocketHandler : IWebSocketHandler
         }
     }
 
-    private async Task<IEnumerable<object>> HandleSessionStartAsync(ClassroomSession session, RawEnvelope rawEnvelope, string correlationId,CancellationToken ct)
+    private async Task<IEnumerable<object>> HandleSessionStartAsync(ClassroomSession session, RawEnvelope rawEnvelope, string correlationId, SequenceCounter seq, CancellationToken ct)
     {
         var payload = rawEnvelope.Payload.Deserialize<SessionStartPayload>(_serializerOptions);
         if (payload is null)
@@ -225,22 +234,20 @@ public sealed class ClassroomWebSocketHandler : IWebSocketHandler
             Data = new Dictionary<string, object>
             {
                 ["lessonId"] = payload.LessonId
-            },
-            SequenceNumber = session.Events.Count
+            }
         };
 
-        var ackEnvelope = BuildEnvelope(session.SessionId, WsTypes.SessionEvent, evtPayload, correlationId, session.Events.Count);
+        var ackEnvelope = BuildEnvelope(session.SessionId, WsTypes.SessionEvent, evtPayload, correlationId, sequence: seq.Next());
         return new object[] { ackEnvelope };
     }
 
-    private async Task<IEnumerable<object>> HandleStudentInputAsync(ClassroomSession session, RawEnvelope rawEnvelope, string correlationId, CancellationToken ct)
+    private async Task<IEnumerable<object>> HandleStudentInputAsync(ClassroomSession session, RawEnvelope rawEnvelope, string correlationId, SequenceCounter seq, CancellationToken ct)
     {
         var payload = rawEnvelope.Payload.Deserialize<StudentInputPayload>(_serializerOptions);
         if (payload is null)
-        {
             return Array.Empty<object>();
-        }
 
+        // Persist the student's input as an auditable event
         session.RecordEvent(new SessionEvent
         {
             EventType = "student.input",
@@ -253,6 +260,72 @@ public sealed class ClassroomWebSocketHandler : IWebSocketHandler
 
         await _sessions.SaveSessionAsync(session, ct);
 
+        // -------------------------
+        // STREAMING OUTPUT PLAN
+        // -------------------------
+        var turnId = Guid.NewGuid().ToString("N");
+
+        // Offset semantics: relative to when we started generating this teacher turn
+        var sw = Stopwatch.StartNew();
+        int OffsetMs() => (int)sw.ElapsedMilliseconds;
+
+        var outgoing = new List<object>(capacity: 8);
+
+        // DeltaIndex is 1-based and must be set on every delta
+        var deltaIndex = 0;
+
+        // 1) TeacherTurnStart
+        var turnStart = new TeacherTurnStartPayload
+        {
+            TurnId = turnId,
+            OffsetMs = 0,
+            Reason = "student_input"
+        };
+
+        outgoing.Add(BuildEnvelope(
+            session.SessionId,
+            WsTypes.TeacherTurnStart,
+            turnStart,
+            correlationId,
+            sequence: seq.Next()));
+
+        // 2) Micro-ack (immediate presence)
+        var delta1 = new TeacherTextDeltaPayload
+        {
+            TurnId = turnId,
+            DeltaIndex = ++deltaIndex,
+            Delta = "Okay — ",
+            OffsetMs = OffsetMs(),
+            IsFinal = false,
+            Operation = TextDeltaOperation.Append
+        };
+
+        outgoing.Add(BuildEnvelope(
+            session.SessionId,
+            WsTypes.TeacherTextDelta,
+            delta1,
+            correlationId,
+            sequence: seq.Next()));
+
+        // 3) Partial thought while we “think”
+        var delta2 = new TeacherTextDeltaPayload
+        {
+            TurnId = turnId,
+            DeltaIndex = ++deltaIndex,
+            Delta = "let’s work through that together… ",
+            OffsetMs = OffsetMs(),
+            IsFinal = false,
+            Operation = TextDeltaOperation.Append
+        };
+
+        outgoing.Add(BuildEnvelope(
+            session.SessionId,
+            WsTypes.TeacherTextDelta,
+            delta2,
+            correlationId,
+            sequence: seq.Next()));
+
+        // 4) Orchestrator call (real decision)
         var action = await _orchestrator.SelectNextActionAsync(new TeachingContext
         {
             SessionId = session.SessionId,
@@ -261,16 +334,56 @@ public sealed class ClassroomWebSocketHandler : IWebSocketHandler
             StudentInput = payload.Content
         }, ct);
 
+        // 5) Main content as final delta (one chunk for now)
+        var deltaMain = new TeacherTextDeltaPayload
+        {
+            TurnId = turnId,
+            DeltaIndex = ++deltaIndex,
+            Delta = action.Content,
+            OffsetMs = OffsetMs(),
+            IsFinal = true,
+            Operation = TextDeltaOperation.Append
+        };
+
+        outgoing.Add(BuildEnvelope(
+            session.SessionId,
+            WsTypes.TeacherTextDelta,
+            deltaMain,
+            correlationId,
+            sequence: seq.Next()));
+
+        // 6) TeacherTurnEnd
+        var turnEnd = new TeacherTurnEndPayload
+        {
+            TurnId = turnId,
+            OffsetMs = OffsetMs(),
+            Outcome = "completed"
+        };
+
+        outgoing.Add(BuildEnvelope(
+            session.SessionId,
+            WsTypes.TeacherTurnEnd,
+            turnEnd,
+            correlationId,
+            sequence: seq.Next()));
+
+        // OPTIONAL: keep legacy teacher_response for backward compatibility
         var teacherResponse = new TeacherResponsePayload
         {
             Content = action.Content,
             Type = ResponseType.TextExplanation,
             IsStreaming = false,
-            Metadata = action.Metadata
+            Metadata = action.Metadata ?? new Dictionary<string, object>()
         };
 
-        var responseEnvelope = BuildEnvelope(session.SessionId, WsTypes.TeacherResponse, teacherResponse, correlationId, session.Events.Count);
-        return new object[] { responseEnvelope };
+        outgoing.Add(BuildEnvelope(
+            session.SessionId,
+            WsTypes.TeacherResponse,
+            teacherResponse,
+            correlationId,
+            sequence: seq.Next()));
+
+        return outgoing;
     }
 
     private async Task HandleDisconnectAsync(ClassroomSession session, WebSocket socket, CancellationToken ct)
