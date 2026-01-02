@@ -1,0 +1,1 @@
+Follow LUNE_CONTEXT.md and AI_RULES.md as governing specs. Prioritize §2.1 zero-latency conversational presence.

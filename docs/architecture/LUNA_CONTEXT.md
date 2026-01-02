@@ -34,6 +34,48 @@ Key characteristics of the end-state:
 
 Luna prioritizes **learning effectiveness over novelty**.
 
+## 2.1 Conversational Presence & Zero-Latency Teaching (Non-Negotiable)
+
+A core, non-negotiable requirement of Luna is that **interaction with the AI teacher must feel alive, immediate, and human**.
+
+Luna explicitly optimizes for **conversational presence**, not traditional request/response latency.
+
+This means:
+
+- The teacher begins responding **before the student finishes speaking**
+- Responses may arrive as **partial thoughts**, pauses, corrections, and continuations
+- Silence, hesitation, and pacing are treated as **instructional signals**, not errors
+- The system prioritizes **felt responsiveness** over perfectly formed answers
+
+The student should experience Luna as a **thinking, listening teacher**, not a system that waits, computes, and replies.
+
+### Design Principles for Conversational Realism
+
+- **Streaming cognition**  
+  Teacher reasoning and explanation may stream incrementally, mirroring how humans think aloud.
+
+- **Overlapping turns**  
+  The teacher may acknowledge, interrupt gently, or redirect mid-input when pedagogically appropriate.
+
+- **Micro-acknowledgements**  
+  Short verbal cues (“mm-hmm”, “okay”, “wait—good question”) are first-class responses.
+
+- **Latency masking**  
+  When unavoidable delays exist, Luna must use verbal fillers, partial explanations, or transitional cues to preserve conversational flow.
+
+- **Voice-first orchestration**  
+  Audio response timing and cadence take precedence over text completeness.
+
+Luna treats **perceived latency** as a learning obstacle and actively works to eliminate it — even if this requires:
+
+- speculative responses  
+- predictive turn-taking  
+- streaming partial outputs  
+- concurrent input/output processing  
+- bleeding-edge real-time model integration  
+
+A technically perfect response delivered too late is considered a **failure**.
+
 ---
 
 ## 3. Architectural Philosophy

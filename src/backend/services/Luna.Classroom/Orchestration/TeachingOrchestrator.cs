@@ -1,3 +1,7 @@
+// AI CONTRACT:
+// Must follow LUNE_CONTEXT.md §2.1 (conversational presence)
+// Streaming-first, correlation IDs, timestamps, monotonic sequence
+
 namespace Luna.Classroom.Orchestration;
 
 /// <summary>

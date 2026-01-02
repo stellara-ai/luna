@@ -1,3 +1,6 @@
+// AI CONTRACT:
+// Must follow LUNE_CONTEXT.md §2.1 (conversational presence)
+// Streaming-first, correlation IDs, timestamps, monotonic sequence
 namespace Luna.Classroom.Realtime;
 
 using System;
@@ -5,6 +8,7 @@ using System.Collections.Generic;
 using System.Net.WebSockets;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using Luna.Classroom.Orchestration;
 using Luna.Classroom.Persistence;
 using Luna.Classroom.Sessions;
@@ -30,7 +34,8 @@ public sealed class ClassroomWebSocketHandler : IWebSocketHandler
     private readonly ILogger<ClassroomWebSocketHandler> _logger;
     private readonly JsonSerializerOptions _serializerOptions = new(JsonSerializerDefaults.Web)
     {
-        PropertyNameCaseInsensitive = true
+        PropertyNameCaseInsensitive = true,
+        Converters = { new JsonStringEnumConverter(JsonNamingPolicy.CamelCase) }
     };
 
     private sealed record RawEnvelope(

@@ -1,3 +1,7 @@
+// AI CONTRACT:
+// Must follow LUNE_CONTEXT.md §2.1 (conversational presence)
+// Streaming-first, correlation IDs, timestamps, monotonic sequence
+
 namespace Luna.Contracts.Realtime;
 
 /// <summary>
@@ -12,14 +16,3 @@ public record WsEnvelope<T>(
     int? SequenceNumber,
     T Payload
 ) where T : class;
-
-/// <summary>
-/// Base class for WebSocket message payloads.
-/// All real-time messages must inherit from this.
-/// </summary>
-public abstract class WsPayload
-{
-    public string? SessionId { get; set; }
-    public string? UserId { get; set; }
-    public DateTime CreatedAt { get; set; }
-}

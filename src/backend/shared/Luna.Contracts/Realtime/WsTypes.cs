@@ -2,21 +2,50 @@ namespace Luna.Contracts.Realtime;
 
 /// <summary>
 /// Classroom-specific WebSocket message types.
+/// Versioned and stable — treated as public API.
 /// </summary>
 public static class WsTypes
 {
-    public const string StudentInput = "classroom.student_input";
-    public const string TeacherResponse = "classroom.teacher_response";
-    public const string TeacherTurnStart = "classroom.teacher_turn_start";
-    public const string TeacherTurnEnd = "classroom.teacher_turn_end";
-    public const string SessionStart = "classroom.session_start";
-    public const string SessionEnd = "classroom.session_end";
-    public const string ControlSignal = "classroom.control_signal";
-    public const string SessionEvent = "classroom.session_event";
+    // ------------------------------
+    // Session lifecycle
+    // ------------------------------
+    public const string SessionStart = "v1.classroom.session_start";
+    public const string SessionEnd   = "v1.classroom.session_end";
+    public const string SessionEvent = "v1.classroom.session_event";
+
+    // ------------------------------
+    // Student → Teacher
+    // ------------------------------
+    public const string StudentInput  = "v1.classroom.student_input";
+    public const string ControlSignal = "v1.classroom.control_signal";
+
+    // ------------------------------
+    // Teacher turn orchestration
+    // ------------------------------
+    public const string TeacherTurnStart = "v1.classroom.teacher_turn_start";
+    public const string TeacherTurnEnd   = "v1.classroom.teacher_turn_end";
+
+    // ------------------------------
+    // Teacher output (streamed)
+    // ------------------------------
+    public const string TeacherResponse     = "v1.classroom.teacher_response";      // legacy / aggregate
+    public const string TeacherTextDelta    = "v1.classroom.teacher_text_delta";     // incremental text
+    public const string TeacherAudioChunk   = "v1.classroom.teacher_audio_chunk";    // base64 or binary
+    public const string TeacherMark         = "v1.classroom.teacher_mark";           // timing markers
+    public const string TeacherExpression   = "v1.classroom.teacher_expression";     // emotion / gesture
+    public const string TeacherViseme       = "v1.classroom.teacher_viseme";          // lip-sync (optional, later)
+
+    // ------------------------------
+    // System / transport
+    // ------------------------------
+    public const string Error = "v1.classroom.error";
+    public const string Ping  = "v1.classroom.ping";
+    public const string Pong  = "v1.classroom.pong";
 }
 
 /// <summary>
 /// Control signals the student can send during a lesson.
+/// Kept here because it is protocol-level, not UI-level.
 /// </summary>
 public enum ControlSignal
 {
