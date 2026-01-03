@@ -41,8 +41,8 @@ public sealed class ClassroomWebSocketHandler : IWebSocketHandler
 
     private sealed class SequenceCounter
     {
-        public int Value { get; set; }
-        public int Next() => ++Value; // 1-based
+        private int _value;
+        public int Next() => Interlocked.Increment(ref _value);
     }
 
     private sealed record RawEnvelope(
@@ -75,6 +75,7 @@ public sealed class ClassroomWebSocketHandler : IWebSocketHandler
             return;
         }
 
+        var connectionCorrelationId = Guid.NewGuid().ToString("N");
         var seq = new SequenceCounter();
 
         // Mark connection event
@@ -83,7 +84,8 @@ public sealed class ClassroomWebSocketHandler : IWebSocketHandler
             EventType = "session.connected",
             Data = new Dictionary<string, object>
             {
-                ["sessionId"] = sessionId
+                ["sessionId"] = sessionId,
+                ["connectionCorrelationId"] = connectionCorrelationId
             }
         }, _clock);
         await _sessions.SaveSessionAsync(session, ct);
@@ -93,7 +95,8 @@ public sealed class ClassroomWebSocketHandler : IWebSocketHandler
             EventType = "session.connected",
             Data = new Dictionary<string, object>
             {
-                ["sessionId"] = sessionId
+                ["sessionId"] = sessionId,
+                ["connectionCorrelationId"] = connectionCorrelationId
             }
         };
 
@@ -101,7 +104,7 @@ public sealed class ClassroomWebSocketHandler : IWebSocketHandler
             session.SessionId,
             WsTypes.SessionEvent,
             connectedPayload,
-            correlationId: null,
+            correlationId: connectionCorrelationId,
             sequence: seq.Next());
 
         var connectedBytes = JsonSerializer.SerializeToUtf8Bytes(connectedEnvelope, _serializerOptions);
@@ -109,6 +112,31 @@ public sealed class ClassroomWebSocketHandler : IWebSocketHandler
 
         var buffer = new byte[32 * 1024];
         var builder = new StringBuilder();
+        // 1) Outbound send lock (one per WS connection)
+        var sendLock = new SemaphoreSlim(1, 1);
+        // Reserved for future turn arbitration / interruption logic
+        // private readonly SemaphoreSlim _sessionLock = new(1, 1);
+
+        //sender
+        async Task SendEnvelopeAsync(object envelope)
+        {
+            var bytes = JsonSerializer.SerializeToUtf8Bytes(envelope, _serializerOptions);
+            await socket.SendAsync(bytes, WebSocketMessageType.Text, true, ct);
+        }
+
+        // 2) Safe sender (serializes all outbound sends)
+        async Task SafeSendEnvelopeAsync(object envelope)
+        {
+            await sendLock.WaitAsync(ct);
+            try
+            {
+                await SendEnvelopeAsync(envelope);
+            }
+            finally
+            {
+                sendLock.Release();
+            }
+        }
 
         while (socket.State == WebSocketState.Open && !ct.IsCancellationRequested)
         {
@@ -136,20 +164,11 @@ public sealed class ClassroomWebSocketHandler : IWebSocketHandler
             var rawMessage = builder.ToString();
             builder.Clear();
 
-            var responses = await HandleMessageAsync(session, rawMessage, seq, ct);
-            foreach (var response in responses)
-            {
-                var payload = JsonSerializer.SerializeToUtf8Bytes(response, _serializerOptions);
-                await socket.SendAsync(payload, WebSocketMessageType.Text, true, ct);
-            }
+            await HandleMessageAsync(session, rawMessage, connectionCorrelationId, seq, SafeSendEnvelopeAsync, ct);
         }
     }
 
-    private async Task<IEnumerable<object>> HandleMessageAsync(
-        ClassroomSession session,
-        string rawMessage,
-        SequenceCounter seq,
-        CancellationToken ct)
+    private async Task HandleMessageAsync(ClassroomSession session, string rawMessage, string connectionCorrelationId, SequenceCounter seq, Func<object, Task> safeSendEnvelopeAsync, CancellationToken ct)
     {
         RawEnvelope? rawEnvelope;
 
@@ -160,60 +179,78 @@ public sealed class ClassroomWebSocketHandler : IWebSocketHandler
         catch (JsonException ex)
         {
             _logger.LogWarning(ex, "Invalid JSON envelope for session {SessionId}", session.SessionId);
-            return Array.Empty<object>();
+            return;
         }
 
         if (rawEnvelope is null)
         {
             _logger.LogWarning("Received null envelope for session {SessionId}", session.SessionId);
-            return Array.Empty<object>();
+            return;
         }
 
         // ✅ SAFETY: ensure message type exists before routing
         if (string.IsNullOrWhiteSpace(rawEnvelope.MessageType))
         {
-            _logger.LogWarning(
-                "Envelope missing MessageType for session {SessionId}",
-                session.SessionId);
+            _logger.LogWarning("Envelope missing MessageType for session {SessionId}", session.SessionId);
 
-            return Array.Empty<object>();
+            return;
         }
 
-        // ✅ CORRELATION: ensure we always have one
-        var correlationId =
+        // FLOW correlation: prefer client-supplied correlationId.
+        // If absent, fall back to client messageId (stable for this request/flow).
+        // If even that is absent, fall back to the connectionCorrelationId (stable for the WS session thread).
+        var flowCorrelationId =
             rawEnvelope.CorrelationId
             ?? rawEnvelope.MessageId
-            ?? Guid.NewGuid().ToString("N");
+            ?? connectionCorrelationId;
 
+        if (ct.IsCancellationRequested) return;
         switch (rawEnvelope.MessageType)
         {
             case WsTypes.SessionStart:
-                return await HandleSessionStartAsync(session, rawEnvelope, correlationId, seq, ct);
+                await HandleSessionStartAsync(session, rawEnvelope, flowCorrelationId, seq, safeSendEnvelopeAsync, ct);
+                return;
 
             case WsTypes.StudentInput:
-                return await HandleStudentInputAsync(session, rawEnvelope, correlationId, seq, ct);
-
+                    _ = Task.Run(async () =>
+                    {
+                        try
+                        {
+                            await HandleStudentInputAsync(session, rawEnvelope, flowCorrelationId, seq, safeSendEnvelopeAsync, ct);
+                        }
+                        catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
+                        catch (Exception ex)
+                        {
+                            _logger.LogError(ex, "StudentInput handler failed for session {SessionId}", session.SessionId);
+                        }
+                    });
+                    return;
             default:
-                _logger.LogWarning(
-                    "Unhandled message type {MessageType} for session {SessionId}",
-                    rawEnvelope.MessageType,
-                    session.SessionId);
-
-                return Array.Empty<object>();
+                _logger.LogWarning("Unhandled message type {MessageType} for session {SessionId}",
+                    rawEnvelope.MessageType, session.SessionId);
+                return;
         }
     }
 
-    private async Task<IEnumerable<object>> HandleSessionStartAsync(ClassroomSession session, RawEnvelope rawEnvelope, string correlationId, SequenceCounter seq, CancellationToken ct)
+    private async Task HandleSessionStartAsync(ClassroomSession session, RawEnvelope rawEnvelope, string correlationId, SequenceCounter seq, Func<object, Task> sendAsync, CancellationToken ct)
     {
         var payload = rawEnvelope.Payload.Deserialize<SessionStartPayload>(_serializerOptions);
         if (payload is null)
         {
-            return Array.Empty<object>();
+            return;
         }
 
         if (session.Events.Any(e => e.EventType == "session.started"))
         {
-            return Array.Empty<object>(); // or return an ack
+            // re-emit started ack so retries are stable
+            var alreadyPayload = new SessionEventPayload
+            {
+                EventType = "session.started",
+                Data = new Dictionary<string, object> { ["lessonId"] = session.LessonId }
+            };
+
+            await sendAsync(BuildEnvelope(session.SessionId, WsTypes.SessionEvent, alreadyPayload, correlationId, seq.Next()));
+            return;
         }
 
         session.RecordEvent(new SessionEvent
@@ -238,41 +275,39 @@ public sealed class ClassroomWebSocketHandler : IWebSocketHandler
         };
 
         var ackEnvelope = BuildEnvelope(session.SessionId, WsTypes.SessionEvent, evtPayload, correlationId, sequence: seq.Next());
-        return new object[] { ackEnvelope };
+        await sendAsync(ackEnvelope);
     }
 
-    private async Task<IEnumerable<object>> HandleStudentInputAsync(ClassroomSession session, RawEnvelope rawEnvelope, string correlationId, SequenceCounter seq, CancellationToken ct)
+    private async Task HandleStudentInputAsync(ClassroomSession session, RawEnvelope rawEnvelope, string correlationId, SequenceCounter seq, Func<object, Task> sendAsync, CancellationToken ct)
     {
         var payload = rawEnvelope.Payload.Deserialize<StudentInputPayload>(_serializerOptions);
         if (payload is null)
-            return Array.Empty<object>();
+            return;
 
-        // Persist the student's input as an auditable event
+        // TurnId comes from client when provided; else server generates.
+        var turnId = !string.IsNullOrWhiteSpace(payload.TurnId)
+            ? payload.TurnId!
+            : Guid.NewGuid().ToString("N");
+
+        // Persist student input as auditable event
         session.RecordEvent(new SessionEvent
         {
             EventType = "student.input",
             Data = new Dictionary<string, object>
             {
                 ["content"] = payload.Content,
-                ["inputType"] = payload.Type.ToString()
+                ["inputType"] = payload.Type.ToString(),
+                ["turnId"] = turnId
             }
         }, _clock);
 
         await _sessions.SaveSessionAsync(session, ct);
 
-        // -------------------------
-        // STREAMING OUTPUT PLAN
-        // -------------------------
-        var turnId = Guid.NewGuid().ToString("N");
-
         // Offset semantics: relative to when we started generating this teacher turn
         var sw = Stopwatch.StartNew();
         int OffsetMs() => (int)sw.ElapsedMilliseconds;
 
-        var outgoing = new List<object>(capacity: 8);
-
-        // DeltaIndex is 1-based and must be set on every delta
-        var deltaIndex = 0;
+        var deltaIndex = 0; // 1-based in payload
 
         // 1) TeacherTurnStart
         var turnStart = new TeacherTurnStartPayload
@@ -282,14 +317,14 @@ public sealed class ClassroomWebSocketHandler : IWebSocketHandler
             Reason = "student_input"
         };
 
-        outgoing.Add(BuildEnvelope(
+        await sendAsync(BuildEnvelope(
             session.SessionId,
             WsTypes.TeacherTurnStart,
             turnStart,
             correlationId,
             sequence: seq.Next()));
 
-        // 2) Micro-ack (immediate presence)
+        // 2) Micro-ack
         var delta1 = new TeacherTextDeltaPayload
         {
             TurnId = turnId,
@@ -300,14 +335,19 @@ public sealed class ClassroomWebSocketHandler : IWebSocketHandler
             Operation = TextDeltaOperation.Append
         };
 
-        outgoing.Add(BuildEnvelope(
+        await sendAsync(BuildEnvelope(
             session.SessionId,
             WsTypes.TeacherTextDelta,
             delta1,
             correlationId,
             sequence: seq.Next()));
 
-        // 3) Partial thought while we “think”
+        // ✅ DEV-ONLY timing pulse
+        #if DEBUG
+            await Task.Delay(25, ct);
+        #endif
+
+        // 3) Partial thought
         var delta2 = new TeacherTextDeltaPayload
         {
             TurnId = turnId,
@@ -318,14 +358,19 @@ public sealed class ClassroomWebSocketHandler : IWebSocketHandler
             Operation = TextDeltaOperation.Append
         };
 
-        outgoing.Add(BuildEnvelope(
+        await sendAsync(BuildEnvelope(
             session.SessionId,
             WsTypes.TeacherTextDelta,
             delta2,
             correlationId,
             sequence: seq.Next()));
 
-        // 4) Orchestrator call (real decision)
+        // ✅ DEV-ONLY thinking pulse
+        #if DEBUG
+            await Task.Delay(40, ct);
+        #endif
+
+        // 4) Orchestrator call
         var action = await _orchestrator.SelectNextActionAsync(new TeachingContext
         {
             SessionId = session.SessionId,
@@ -334,7 +379,7 @@ public sealed class ClassroomWebSocketHandler : IWebSocketHandler
             StudentInput = payload.Content
         }, ct);
 
-        // 5) Main content as final delta (one chunk for now)
+        // 5) Main content (final delta for now)
         var deltaMain = new TeacherTextDeltaPayload
         {
             TurnId = turnId,
@@ -345,7 +390,7 @@ public sealed class ClassroomWebSocketHandler : IWebSocketHandler
             Operation = TextDeltaOperation.Append
         };
 
-        outgoing.Add(BuildEnvelope(
+        await sendAsync(BuildEnvelope(
             session.SessionId,
             WsTypes.TeacherTextDelta,
             deltaMain,
@@ -360,30 +405,14 @@ public sealed class ClassroomWebSocketHandler : IWebSocketHandler
             Outcome = "completed"
         };
 
-        outgoing.Add(BuildEnvelope(
+        await sendAsync(BuildEnvelope(
             session.SessionId,
             WsTypes.TeacherTurnEnd,
             turnEnd,
             correlationId,
             sequence: seq.Next()));
 
-        // OPTIONAL: keep legacy teacher_response for backward compatibility
-        var teacherResponse = new TeacherResponsePayload
-        {
-            Content = action.Content,
-            Type = ResponseType.TextExplanation,
-            IsStreaming = false,
-            Metadata = action.Metadata ?? new Dictionary<string, object>()
-        };
-
-        outgoing.Add(BuildEnvelope(
-            session.SessionId,
-            WsTypes.TeacherResponse,
-            teacherResponse,
-            correlationId,
-            sequence: seq.Next()));
-
-        return outgoing;
+        return;
     }
 
     private async Task HandleDisconnectAsync(ClassroomSession session, WebSocket socket, CancellationToken ct)

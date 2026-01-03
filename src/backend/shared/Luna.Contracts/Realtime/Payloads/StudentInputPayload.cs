@@ -9,4 +9,6 @@ public class StudentInputPayload : WsPayload
 {
     public string Content { get; set; } = string.Empty;
     public InputType Type { get; set; }
+    // NEW: optional now, required later
+    public string? TurnId { get; set; }
 }

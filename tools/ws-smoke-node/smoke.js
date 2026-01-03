@@ -130,6 +130,89 @@ function wsCollect(ws, {
   });
 }
 
+function getTurnId(msg) {
+  const p = msg?.payload ?? {};
+  return p.turnId ?? p.TurnId ?? null;
+}
+
+function getDeltaIndex(msg) {
+  const p = msg?.payload ?? {};
+  return p.deltaIndex ?? p.DeltaIndex ?? null;
+}
+
+function getDeltaText(msg) {
+  const p = msg?.payload ?? {};
+  return p.delta ?? p.Delta ?? null;
+}
+
+function assertMonotonicSequence(msgs, label = "batch") {
+  let prev = -Infinity;
+  for (const m of msgs) {
+    const seq = m?.sequenceNumber;
+    if (typeof seq !== "number") continue;
+    if (seq <= prev) {
+      throw new Error(
+        `Non-monotonic envelope sequenceNumber in ${label}: ${seq} after ${prev}`
+      );
+    }
+    prev = seq;
+  }
+}
+
+function buildTurnTranscript(msgs) {
+  // Group deltas by turnId
+  const turns = new Map(); // turnId -> { deltas: [{i,text,offset}], start, end, legacyResponse }
+  for (const m of msgs) {
+    const type = m?.messageType;
+    const tid = getTurnId(m);
+
+    if (type === "v1.classroom.teacher_response") {
+      // legacy aggregate fallback (no turnId)
+      const content = m?.payload?.content ?? m?.payload?.Content;
+      if (!content) continue;
+      const key = tid ?? "__legacy__";
+      if (!turns.has(key)) turns.set(key, { deltas: [], legacyResponse: null });
+      turns.get(key).legacyResponse = content;
+      continue;
+    }
+
+    // For turn-scoped messages, skip if no turnId
+    if (!tid) continue;
+
+    if (!turns.has(tid)) turns.set(tid, { deltas: [], start: null, end: null, legacyResponse: null });
+    const t = turns.get(tid);
+
+    if (type === "v1.classroom.teacher_turn_start") t.start = m;
+    if (type === "v1.classroom.teacher_turn_end") t.end = m;
+
+    if (type === "v1.classroom.teacher_text_delta") {
+      const i = getDeltaIndex(m);
+      const text = getDeltaText(m) ?? "";
+      const offset = m?.payload?.offsetMs ?? m?.payload?.OffsetMs ?? 0;
+      if (typeof i === "number") t.deltas.push({ i, text, offset });
+    }
+  }
+
+  // Build assembled text per turn
+  const result = [];
+  for (const [turnId, t] of turns.entries()) {
+    const deltasSorted = [...t.deltas].sort((a, b) => a.i - b.i);
+    const assembled = deltasSorted.map(d => d.text).join("");
+    result.push({
+      turnId,
+      hasStart: !!t.start,
+      hasEnd: !!t.end,
+      deltaCount: deltasSorted.length,
+      assembledText: assembled,
+      legacyResponse: t.legacyResponse,
+    });
+  }
+
+  // Prefer real turnIds over "__legacy__"
+  result.sort((a, b) => (a.turnId === "__legacy__") - (b.turnId === "__legacy__"));
+  return result;
+}
+
 function summarizeMessages(msgs) {
   const lines = [];
   for (const m of msgs) {
@@ -139,9 +222,12 @@ function summarizeMessages(msgs) {
     const payload = m?.payload ?? {};
     const turnId = payload?.turnId || payload?.TurnId;
     const offsetMs = payload?.offsetMs ?? payload?.OffsetMs;
+    const deltaIndex = payload?.deltaIndex ?? payload?.DeltaIndex;
+
     lines.push(
       `- ${type}  seq=${seq} corr=${corr}` +
       (turnId ? ` turnId=${turnId}` : "") +
+      (deltaIndex !== undefined ? ` deltaIndex=${deltaIndex}` : "") +
       (offsetMs !== undefined ? ` offsetMs=${offsetMs}` : "")
     );
   }
@@ -210,7 +296,7 @@ function summarizeMessages(msgs) {
   const correlationId = NewId();
   const sessionStartEnvelope = {
     messageId: NewId(),
-    correlationId,
+    correlationId: correlationId,
     messageType: "v1.classroom.session_start",
     timestamp: new Date().toISOString(),
     sequenceNumber: 1,
@@ -242,45 +328,148 @@ function summarizeMessages(msgs) {
   }
   console.log("");
 
+    const inputTurnIdA = NewId();
+    const inputTurnIdB = NewId();
+
+    console.log(`Client inputTurnIdA: ${inputTurnIdA}`);
+    console.log(`Client inputTurnIdB: ${inputTurnIdB}`);
   // 6) Send student_input
-  const studentInputEnvelope = {
+  const studentInputEnvelopeA = {
     messageId: NewId(),
-    correlationId,
+    correlationId: correlationId,
     messageType: "v1.classroom.student_input",
     timestamp: new Date().toISOString(),
     sequenceNumber: 2,
     payload: {
       sessionId,
+      turnId: inputTurnIdA,
       content: "Hi Luna — can you explain fractions simply?",
       type: "Text", // if enum string ever fails, use: type: 0
     },
   };
 
-  console.log("SEND (student_input)...");
-  ws.send(JSON.stringify(studentInputEnvelope));
+const studentInputEnvelopeB = {
+    messageId: NewId(),
+    correlationId: correlationId,
+    messageType: "v1.classroom.student_input",
+    timestamp: new Date().toISOString(),
+    sequenceNumber: 3,
+    payload: {
+      sessionId,
+      turnId: inputTurnIdB,
+      content: "Now explain decimals simply too.",
+      type: "Text", // if enum string ever fails, use: type: 0
+    },
+  };
 
-  // 7) Collect response stream:
-  // Stop conditions (any one):
-  // - teacher_response arrives (current behavior)
-  // - teacher_turn_end arrives (future streaming behavior)
-  //
-  // Otherwise stop on idle/hard timeout.
-  const replyMsgs = await wsCollect(ws, {
-    stopWhen: (m) =>
-      m?.messageType === "v1.classroom.teacher_response" ||
-      m?.messageType === "v1.classroom.teacher_turn_end",
-    idleTimeoutMs: 650,
-    hardTimeoutMs: 3500,
-    maxMessages: 100,
-  });
 
-  console.log("RECV (reply batch):");
-  console.log(summarizeMessages(replyMsgs));
-  console.log("");
+  console.log("SEND (student_input A)...");
+  ws.send(JSON.stringify(studentInputEnvelopeA));
+  console.log("SEND (student_input B)...");
+  ws.send(JSON.stringify(studentInputEnvelopeB));
+
+  // 7) Collect response stream for TWO turns
+// Stop when we have teacher_turn_end for BOTH input turnIds.
+// Legacy fallback: if server sends teacher_response only, stop on first teacher_response.
+const expectedTurnIds = new Set([inputTurnIdA, inputTurnIdB]);
+const endedTurnIds = new Set();
+
+
+    const replyMsgs = await wsCollect(ws, {
+    stopWhen: (m, all) => {
+        const ended = new Set(
+        all
+            .filter(x => x?.messageType === "v1.classroom.teacher_turn_end")
+            .map(getTurnId)
+            .filter(Boolean)
+        );
+
+        return ended.has(inputTurnIdA) && ended.has(inputTurnIdB);
+    },
+    idleTimeoutMs: 900,   // give it a bit more breathing room for 2 turns
+    hardTimeoutMs: 6000,  // overlap test needs more time than single turn
+    maxMessages: 300,
+    });
+
+console.log("RECV (reply batch):");
+
+    // Validate envelope sequence monotonicity for the reply burst
+    assertMonotonicSequence(replyMsgs, "reply batch");
+
+    // Echo checks (each input turnId must appear in streaming messages)
+    const echoedA = replyMsgs.some(m => getTurnId(m) === inputTurnIdA);
+    const echoedB = replyMsgs.some(m => getTurnId(m) === inputTurnIdB);
+
+    console.log(`Echoed inputTurnIdA? ${echoedA ? "✅ yes" : "❌ no"}`);
+    console.log(`Echoed inputTurnIdB? ${echoedB ? "✅ yes" : "❌ no"}`);
+
+    // Option A: streaming-only contract
+    const hasAnyDelta = replyMsgs.some(m => m?.messageType === "v1.classroom.teacher_text_delta");
+    const hasTurnStart = replyMsgs.some(m => m?.messageType === "v1.classroom.teacher_turn_start");
+    const hasTurnEnd = replyMsgs.some(m => m?.messageType === "v1.classroom.teacher_turn_end");
+
+    // 1) Must have streaming framing + content
+    if (!hasAnyDelta || !hasTurnStart || !hasTurnEnd) {
+    console.error("❌ Missing streaming messages (need turn_start, text_delta, turn_end).");
+    process.exitCode = 1;
+    }
+
+    // 2) Must echo both input turnIds somewhere in the stream
+    if (!echoedA || !echoedB) {
+        console.error("❌ Streaming deltas received but server did not echo both input turnIds.");
+        process.exitCode = 1;
+    }
+
+    // Build/print assembled turn text (from deltas)
+    const turns = buildTurnTranscript(replyMsgs);
+
+    if (turns.length) {
+        console.log("Assembled turn transcript(s):");
+        for (const t of turns) {
+            console.log(`\nTurn: ${t.turnId}`);
+            console.log(`  start: ${t.hasStart ? "✅" : "❌"}  end: ${t.hasEnd ? "✅" : "❌"}  deltas: ${t.deltaCount}`);
+            if (t.assembledText) {
+            console.log("  assembled (deltas):");
+            console.log(`  ${t.assembledText}`);
+            } else if (t.legacyResponse) {
+            console.log("  legacy response:");
+            console.log(`  ${t.legacyResponse}`);
+            } else {
+            console.log("  (no text assembled)");
+            }
+        }
+        console.log("");
+    }
+
+    // Per-turn streaming contract checks (only for expected turns)
+    if (hasAnyDelta) {
+    const turnMap = new Map(turns.map(t => [t.turnId, t]));
+
+    for (const tid of expectedTurnIds) {
+        const t = turnMap.get(tid);
+        if (!t) {
+        console.error(`❌ Missing any assembled turn state for expected turnId ${tid}`);
+        process.exitCode = 1;
+        continue;
+        }
+
+        if (!t.hasStart || !t.hasEnd) {
+        console.error(`❌ Missing teacher_turn_start or teacher_turn_end for turnId ${tid}`);
+        process.exitCode = 1;
+        }
+
+        if (t.deltaCount < 1) {
+        console.error(`❌ No text deltas received for turnId ${tid}`);
+        process.exitCode = 1;
+        }
+    }
+    }
+
+    console.log(summarizeMessages(replyMsgs));
+    console.log("");
 
   // Assertions
   const okTypes = new Set([
-    "v1.classroom.teacher_response",
     "v1.classroom.teacher_turn_start",
     "v1.classroom.teacher_turn_end",
     "v1.classroom.teacher_text_delta",
