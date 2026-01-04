@@ -41,6 +41,22 @@ public static class WsTypes
     public const string Error = "v1.classroom.error";
     public const string Ping  = "v1.classroom.ping";
     public const string Pong  = "v1.classroom.pong";
+
+    // Student → Server audio streaming (speech-to-text pipeline)
+    //
+    // These messages allow the client to stream microphone audio in real time
+    // using small PCM chunks over WebSocket. They are turn-scoped via TurnId
+    // and are designed for low-latency, conversational speech input.
+    //
+    // Flow:
+    //   - StudentAudioStart : begins an audio turn (allocates buffer / STT session)
+    //   - StudentAudioChunk : carries raw audio frames (PCM)
+    //   - StudentAudioEnd   : signals end-of-speech for the turn
+    //
+    // STT processing may occur incrementally or after AudioEnd, depending on model.
+    public const string StudentAudioStart = "v1.classroom.student_audio_start";
+    public const string StudentAudioChunk = "v1.classroom.student_audio_chunk";
+    public const string StudentAudioEnd   = "v1.classroom.student_audio_end";
 }
 
 /// <summary>

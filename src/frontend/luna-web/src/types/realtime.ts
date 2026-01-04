@@ -28,6 +28,11 @@ export const WsTypes = {
   // legacy (you removed it server-side, but keep type for safety)
   TeacherResponse: 'v1.classroom.teacher_response',
 
+  // Student audio streaming (STT capture)
+  StudentAudioStart: 'v1.classroom.student_audio_start',
+  StudentAudioChunk: 'v1.classroom.student_audio_chunk',
+  StudentAudioEnd: 'v1.classroom.student_audio_end',
+
   // optional streaming types (future)
   TeacherAudioChunk: 'v1.classroom.teacher_audio_chunk',
   TeacherMark: 'v1.classroom.teacher_mark',

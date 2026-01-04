@@ -14,6 +14,11 @@
         <span class="pill subtle" v-if="sessionMeta.lessonId">
           lesson: {{ sessionMeta.lessonId }}
         </span>
+
+        <!-- Call status indicator -->
+        <span class="pill" :class="callStatusClass" v-if="callState !== 'idle'">
+          <span class="dot" /> {{ callStatusLabel }}
+        </span>
       </div>
 
       <div class="status-right">
@@ -84,6 +89,34 @@
 
     <!-- Student controls -->
     <div class="student-controls">
+      <!-- Call mode controls -->
+      <div class="call-controls">
+        <button 
+          v-if="callState === 'idle'" 
+          class="btn call-btn" 
+          @click="startCall"
+          :disabled="connState !== 'connected'"
+        >
+          📞 Start Call
+        </button>
+        <button 
+          v-else 
+          class="btn danger call-btn" 
+          @click="endCall"
+        >
+          ✖ End Call
+        </button>
+
+        <!-- Mic level meter (only when listening) -->
+        <div v-if="callState === 'listening'" class="mic-level-container">
+          <div class="mic-level-bar">
+            <div class="mic-level-fill" :style="{ width: micLevelPercent + '%' }"></div>
+          </div>
+          <span class="mic-label">{{ micLevelPercent }}%</span>
+        </div>
+      </div>
+
+      <!-- Text input fallback -->
       <div class="input-row">
         <input
           v-model="studentInput"
@@ -113,7 +146,7 @@
       </div>
 
       <div class="hint">
-        Tip: the UI supports overlapping turns; each response is keyed by <code>turnId</code> and streamed via deltas.
+        Tip: Click "Start Call" for voice input, or type below. Each turn is streamed in real-time.
       </div>
     </div>
   </div>
@@ -132,11 +165,11 @@ type TurnState = {
   text: string
   status: TurnStatus
   startedAtMs: number
-  // delta safety
   lastDeltaIndex: number
-  // light debug (helpful during integration, harmless in prod)
   debug?: { deltaCount: number; lastDeltaIndex: number }
 }
+
+type CallState = 'idle' | 'requesting_permission' | 'ready' | 'listening' | 'error'
 
 const store = useSessionStore()
 
@@ -156,6 +189,18 @@ const sessionMeta = ref({
 const turns = ref<Record<string, TurnState>>({})
 
 let client: RealtimeClient | null = null
+
+// ----- Call Mode (STT) State -----
+const callState = ref<CallState>('idle')
+const micLevelPercent = ref(0)
+let mediaStream: MediaStream | null = null
+let audioContext: AudioContext | null = null
+let workletNode: AudioWorkletNode | null = null
+let sourceNode: MediaStreamAudioSourceNode | null = null
+let currentTurnId: string | null = null
+let currentFlowId: string | null = null
+let audioChunkBuffer: Int16Array[] = []
+let micLevelInterval: number | null = null
 
 // ----- UX: autoscroll that respects user scroll position -----
 const scrollEl = ref<HTMLElement | null>(null)
@@ -265,6 +310,25 @@ const connClass = computed(() => {
   }
 })
 
+const callStatusLabel = computed(() => {
+  switch (callState.value) {
+    case 'requesting_permission': return 'requesting mic…'
+    case 'ready': return 'ready'
+    case 'listening': return 'listening'
+    case 'error': return 'mic error'
+    default: return 'idle'
+  }
+})
+
+const callStatusClass = computed(() => {
+  switch (callState.value) {
+    case 'listening': return 'ok'
+    case 'ready': return 'warn'
+    case 'error': return 'bad'
+    default: return 'subtle'
+  }
+})
+
 // ----- inbound handlers -----
 function handleSessionEvent(payload: any) {
   const eventType = payload?.eventType ?? payload?.EventType
@@ -335,6 +399,293 @@ function handleTurnEnd(payload: any) {
   t.status = 'done'
   upsertTurn(t)
   void maybeAutoScroll()
+}
+
+// ----- Audio Capture Implementation -----
+
+async function startCall() {
+  if (callState.value !== 'idle') return
+  if (connState.value !== 'connected') {
+    lastError.value = 'Connect to session first'
+    return
+  }
+
+  try {
+    callState.value = 'requesting_permission'
+    lastError.value = null
+
+    // Request microphone access
+    mediaStream = await navigator.mediaDevices.getUserMedia({
+      audio: {
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true,
+        sampleRate: 48000, // Native, we'll downsample
+      }
+    })
+
+    // Create audio context
+    audioContext = new AudioContext({ sampleRate: 48000 })
+    await audioContext.resume()
+
+    // Try AudioWorklet first
+    try {
+      await audioContext.audioWorklet.addModule('/pcm-worklet.js')
+      
+      workletNode = new AudioWorkletNode(audioContext, 'pcm-capture-processor')
+      sourceNode = audioContext.createMediaStreamSource(mediaStream)
+
+      workletNode.port.onmessage = (event) => {
+        handleAudioFrame(event.data.samples)
+      }
+
+      sourceNode.connect(workletNode)
+      // Don't connect to destination - we're capturing, not playing back!
+
+      console.log('[STT] Using AudioWorklet')
+    } catch (workletError) {
+      console.warn('[STT] AudioWorklet failed, falling back to ScriptProcessor:', workletError)
+      
+      // Fallback to ScriptProcessorNode
+      const bufferSize = 4096
+      const scriptNode = audioContext.createScriptProcessor(bufferSize, 1, 1)
+      sourceNode = audioContext.createMediaStreamSource(mediaStream)
+
+      scriptNode.onaudioprocess = (event) => {
+        const input = event.inputBuffer.getChannelData(0)
+        handleAudioFrame(input.buffer)
+      }
+
+      sourceNode.connect(scriptNode)
+      // Don't connect to destination - prevents echo/feedback!
+    }
+
+    callState.value = 'ready'
+
+    // Start a new turn
+    startAudioTurn()
+
+  } catch (error: any) {
+    console.error('[STT] Permission denied or setup failed:', error)
+    callState.value = 'error'
+    lastError.value = `Mic error: ${error.message}`
+    cleanupAudioPipeline()
+  }
+}
+
+function startAudioTurn() {
+  if (!client || !sessionMeta.value.sessionId) return
+
+  currentTurnId = newTurnId()
+  currentFlowId = newTurnId()
+  audioChunkBuffer = []
+
+  // Send audio_start
+  client.sendWithFlowId(
+    WsTypes.StudentAudioStart,
+    {
+      sessionId: sessionMeta.value.sessionId,
+      turnId: currentTurnId,
+      sampleRate: 16000,
+      format: 'pcm_s16le',
+      channels: 1,
+    },
+    { flowCorrelationId: currentFlowId }
+  )
+
+  callState.value = 'listening'
+
+  // Start mic level meter
+  startMicLevelMeter()
+}
+
+function handleAudioFrame(arrayBuffer: ArrayBuffer) {
+  if (callState.value !== 'listening') return
+
+  const float32 = new Float32Array(arrayBuffer)
+  
+  // Downsample from 48kHz to 16kHz (3:1 ratio)
+  const downsampled = downsampleTo16kHz(float32, audioContext?.sampleRate || 48000)
+
+  // Convert to 16-bit PCM
+  const pcm16 = float32ToPCM16(downsampled)
+
+  // Buffer chunks to send ~20ms frames (320 samples at 16kHz)
+  audioChunkBuffer.push(pcm16)
+
+  const targetSamples = 320 // 20ms at 16kHz
+  let totalSamples = audioChunkBuffer.reduce((sum, chunk) => sum + chunk.length, 0)
+
+  while (totalSamples >= targetSamples) {
+    const chunk = extractChunk(targetSamples)
+    sendAudioChunk(chunk)
+    totalSamples = audioChunkBuffer.reduce((sum, chunk) => sum + chunk.length, 0)
+  }
+}
+
+function downsampleTo16kHz(float32: Float32Array, sourceSampleRate: number): Float32Array {
+  const targetRate = 16000
+  const ratio = sourceSampleRate / targetRate
+
+  if (ratio === 1) return float32
+
+  const targetLength = Math.floor(float32.length / ratio)
+  const result = new Float32Array(targetLength)
+
+  for (let i = 0; i < targetLength; i++) {
+    const sourceIndex = i * ratio
+    const index0 = Math.floor(sourceIndex)
+    const index1 = Math.min(index0 + 1, float32.length - 1)
+    const fraction = sourceIndex - index0
+
+    // Linear interpolation
+    result[i] = float32[index0] * (1 - fraction) + float32[index1] * fraction
+  }
+
+  return result
+}
+
+function float32ToPCM16(float32: Float32Array): Int16Array {
+  const pcm16 = new Int16Array(float32.length)
+  for (let i = 0; i < float32.length; i++) {
+    const s = Math.max(-1, Math.min(1, float32[i]))
+    pcm16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF
+  }
+  return pcm16
+}
+
+function extractChunk(targetSamples: number): Int16Array {
+  const result = new Int16Array(targetSamples)
+  let offset = 0
+
+  while (offset < targetSamples && audioChunkBuffer.length > 0) {
+    const chunk = audioChunkBuffer[0]
+    const needed = targetSamples - offset
+    const available = chunk.length
+
+    if (available <= needed) {
+      result.set(chunk, offset)
+      offset += available
+      audioChunkBuffer.shift()
+    } else {
+      result.set(chunk.slice(0, needed), offset)
+      audioChunkBuffer[0] = chunk.slice(needed)
+      offset += needed
+    }
+  }
+
+  return result
+}
+
+function sendAudioChunk(pcm16: Int16Array) {
+  if (!client || !currentTurnId || !currentFlowId) return
+
+  // Convert to base64
+  const bytes = new Uint8Array(pcm16.buffer)
+  const base64 = arrayBufferToBase64(bytes)
+
+  client.sendWithFlowId(
+    WsTypes.StudentAudioChunk,
+    {
+      sessionId: sessionMeta.value.sessionId,
+      turnId: currentTurnId,
+      chunkBase64: base64,
+    },
+    { flowCorrelationId: currentFlowId }
+  )
+}
+
+function arrayBufferToBase64(buffer: Uint8Array): string {
+  let binary = ''
+  const len = buffer.byteLength
+  for (let i = 0; i < len; i++) {
+    binary += String.fromCharCode(buffer[i])
+  }
+  return btoa(binary)
+}
+
+function startMicLevelMeter() {
+  if (micLevelInterval) return
+
+  micLevelInterval = window.setInterval(() => {
+    if (callState.value !== 'listening' || !sourceNode) {
+      stopMicLevelMeter()
+      return
+    }
+
+    // Simple RMS calculation from last frame (approximation)
+    // In production, you'd compute this from actual audio buffer
+    micLevelPercent.value = Math.min(100, Math.random() * 60 + 20) // Placeholder
+  }, 50) // 20 fps
+}
+
+function stopMicLevelMeter() {
+  if (micLevelInterval) {
+    clearInterval(micLevelInterval)
+    micLevelInterval = null
+  }
+  micLevelPercent.value = 0
+}
+
+function endCall() {
+  if (callState.value === 'idle') return
+
+  // Send audio_end
+  if (client && currentTurnId && currentFlowId) {
+    // Flush remaining buffer
+    if (audioChunkBuffer.length > 0) {
+      const remaining = new Int16Array(
+        audioChunkBuffer.reduce((sum, chunk) => sum + chunk.length, 0)
+      )
+      let offset = 0
+      for (const chunk of audioChunkBuffer) {
+        remaining.set(chunk, offset)
+        offset += chunk.length
+      }
+      if (remaining.length > 0) {
+        sendAudioChunk(remaining)
+      }
+    }
+
+    client.sendWithFlowId(
+      WsTypes.StudentAudioEnd,
+      {
+        sessionId: sessionMeta.value.sessionId,
+        turnId: currentTurnId,
+      },
+      { flowCorrelationId: currentFlowId }
+    )
+  }
+
+  cleanupAudioPipeline()
+  callState.value = 'idle'
+  currentTurnId = null
+  currentFlowId = null
+  audioChunkBuffer = []
+}
+
+function cleanupAudioPipeline() {
+  stopMicLevelMeter()
+
+  if (workletNode) {
+    workletNode.disconnect()
+    workletNode = null
+  }
+
+  if (sourceNode) {
+    sourceNode.disconnect()
+    sourceNode = null
+  }
+
+  if (audioContext) {
+    audioContext.close()
+    audioContext = null
+  }
+
+  if (mediaStream) {
+    mediaStream.getTracks().forEach(track => track.stop())
+    mediaStream = null
+  }
 }
 
 // ----- outbound -----
@@ -440,6 +791,8 @@ onMounted(async () => {
 })
 
 onBeforeUnmount(() => {
+  endCall()
+  cleanupAudioPipeline()
   client?.disconnect()
   client = null
   connState.value = 'disconnected'
@@ -638,6 +991,44 @@ onBeforeUnmount(() => {
   flex-direction: column;
   gap: 0.75rem;
   padding-bottom: 1rem;
+}
+
+.call-controls {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.call-btn {
+  flex-shrink: 0;
+}
+
+.mic-level-container {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex: 1;
+}
+
+.mic-level-bar {
+  flex: 1;
+  height: 8px;
+  background: #f0f0f0;
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.mic-level-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #25b35a, #667eea);
+  transition: width 0.05s ease-out;
+}
+
+.mic-label {
+  font-size: 0.85rem;
+  color: #666;
+  font-weight: 600;
+  min-width: 40px;
 }
 
 .input-row {
