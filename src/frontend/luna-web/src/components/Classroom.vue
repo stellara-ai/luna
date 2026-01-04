@@ -200,12 +200,62 @@ let sourceNode: MediaStreamAudioSourceNode | null = null
 let currentTurnId: string | null = null
 let currentFlowId: string | null = null
 let audioChunkBuffer: Int16Array[] = []
-let micLevelInterval: number | null = null
+let silentGain: GainNode | null = null
+let scriptNode: ScriptProcessorNode | null = null
+
+// smoothing + mapping
+let smoothedRms = 0
+const RMS_SMOOTHING = 0.15 // 0..1 (higher = snappier)
+const RMS_FLOOR = 0.005    // noise floor
+const RMS_CEIL = 0.12      // “loud voice” ceiling (tweak later)
+
+// ----- VAD (Voice Activity Detection) -----
+// thresholds are on *RMS of Float32 samples* (pre-downsample)
+const VAD_START_THRESHOLD = 0.018
+const VAD_STOP_THRESHOLD  = 0.012
+const VAD_MIN_SPEECH_MS   = 120
+const VAD_SILENCE_END_MS  = 650
+
+let vadState: 'armed' | 'maybe_speech' | 'in_speech' = 'armed'
+let speechCandidateStartedAtMs = 0
+let lastVoiceAtMs = 0
+
+// Pre-roll: keep a little audio before speech start so we don't clip the first syllable
+const PRE_ROLL_MS = 200
+const PRE_ROLL_SAMPLES_16K = Math.floor((16000 * PRE_ROLL_MS) / 1000) // 3200 at 200ms
+let preRollBuffer: Int16Array[] = []
+let preRollSamples = 0
+
+// Chunk buffering without reduce() every frame
+let bufferedSamples = 0
 
 // ----- UX: autoscroll that respects user scroll position -----
 const scrollEl = ref<HTMLElement | null>(null)
 const bottomEl = ref<HTMLElement | null>(null)
 const shouldAutoScroll = ref(true)
+
+function computeRms(samples: Float32Array): number {
+  let sumSq = 0
+  for (let i = 0; i < samples.length; i++) {
+    const s = samples[i]
+    sumSq += s * s
+  }
+  return Math.sqrt(sumSq / Math.max(1, samples.length))
+}
+
+function rmsToPercent(rms: number): number {
+  if (rms <= RMS_FLOOR) return 0
+  const clamped = Math.min(RMS_CEIL, rms)
+  const norm = (clamped - RMS_FLOOR) / (RMS_CEIL - RMS_FLOOR)
+  const curved = Math.pow(norm, 0.6)
+  return Math.round(curved * 100)
+}
+
+function updateMicMeterFromSamples(samples: Float32Array) {
+  const rms = computeRms(samples)
+  smoothedRms = smoothedRms + (rms - smoothedRms) * RMS_SMOOTHING
+  micLevelPercent.value = rmsToPercent(smoothedRms)
+}
 
 function onScroll() {
   const el = scrollEl.value
@@ -427,6 +477,10 @@ async function startCall() {
     // Create audio context
     audioContext = new AudioContext({ sampleRate: 48000 })
     await audioContext.resume()
+    // ✅ Silent sink to keep audio graph “alive” without playback
+    silentGain = audioContext.createGain()
+    silentGain.gain.value = 0
+    silentGain.connect(audioContext.destination)
 
     // Try AudioWorklet first
     try {
@@ -436,34 +490,46 @@ async function startCall() {
       sourceNode = audioContext.createMediaStreamSource(mediaStream)
 
       workletNode.port.onmessage = (event) => {
-        handleAudioFrame(event.data.samples)
+        const samples = event.data?.samples as ArrayBuffer | undefined
+        if (!samples) return
+        handleAudioFrame(samples)
       }
 
       sourceNode.connect(workletNode)
       // Don't connect to destination - we're capturing, not playing back!
+      // ✅ connect to silent sink (NOT destination)
+      workletNode.connect(silentGain)
 
       console.log('[STT] Using AudioWorklet')
+
     } catch (workletError) {
       console.warn('[STT] AudioWorklet failed, falling back to ScriptProcessor:', workletError)
       
       // Fallback to ScriptProcessorNode
       const bufferSize = 4096
-      const scriptNode = audioContext.createScriptProcessor(bufferSize, 1, 1)
+      scriptNode = audioContext.createScriptProcessor(bufferSize, 1, 1)
       sourceNode = audioContext.createMediaStreamSource(mediaStream)
 
       scriptNode.onaudioprocess = (event) => {
         const input = event.inputBuffer.getChannelData(0)
-        handleAudioFrame(input.buffer)
+        const copy = new Float32Array(input.length)
+        copy.set(input)
+        handleAudioFrame(copy.buffer)
       }
 
       sourceNode.connect(scriptNode)
       // Don't connect to destination - prevents echo/feedback!
+      // ✅ connect to silent sink (NOT destination)
+      scriptNode.connect(silentGain)
     }
 
-    callState.value = 'ready'
+    callState.value = 'listening'
+    vadState = 'armed'
+    speechCandidateStartedAtMs = 0
+    lastVoiceAtMs = 0
 
-    // Start a new turn
-    startAudioTurn()
+    // IMPORTANT: do NOT start a turn here.
+    // We keep the mic open and let VAD decide when to start/stop turns.
 
   } catch (error: any) {
     console.error('[STT] Permission denied or setup failed:', error)
@@ -478,9 +544,11 @@ function startAudioTurn() {
 
   currentTurnId = newTurnId()
   currentFlowId = newTurnId()
-  audioChunkBuffer = []
 
-  // Send audio_start
+  // reset buffers for this turn
+  audioChunkBuffer = []
+  bufferedSamples = 0
+
   client.sendWithFlowId(
     WsTypes.StudentAudioStart,
     {
@@ -492,34 +560,114 @@ function startAudioTurn() {
     },
     { flowCorrelationId: currentFlowId }
   )
+}
 
-  callState.value = 'listening'
+function endAudioTurn() {
+  if (!client || !sessionMeta.value.sessionId) return
+  if (!currentTurnId || !currentFlowId) return
 
-  // Start mic level meter
-  startMicLevelMeter()
+  // flush any remaining buffered PCM for this turn
+  if (bufferedSamples > 0) {
+    const remaining = extractChunk(bufferedSamples)
+    if (remaining.length > 0) sendAudioChunk(remaining)
+  }
+
+  client.sendWithFlowId(
+    WsTypes.StudentAudioEnd,
+    {
+      sessionId: sessionMeta.value.sessionId,
+      turnId: currentTurnId,
+    },
+    { flowCorrelationId: currentFlowId }
+  )
+
+  currentTurnId = null
+  currentFlowId = null
+  audioChunkBuffer = []
+  bufferedSamples = 0
 }
 
 function handleAudioFrame(arrayBuffer: ArrayBuffer) {
   if (callState.value !== 'listening') return
 
   const float32 = new Float32Array(arrayBuffer)
-  
-  // Downsample from 48kHz to 16kHz (3:1 ratio)
-  const downsampled = downsampleTo16kHz(float32, audioContext?.sampleRate || 48000)
 
-  // Convert to 16-bit PCM
+  // mic meter (always)
+  updateMicMeterFromSamples(float32)
+
+  // compute instantaneous RMS for VAD decisions
+  const rms = computeRms(float32)
+  const now = performance.now()
+
+  // Downsample -> PCM16 for streaming (and pre-roll)
+  const downsampled = downsampleTo16kHz(float32, audioContext?.sampleRate || 48000)
   const pcm16 = float32ToPCM16(downsampled)
 
-  // Buffer chunks to send ~20ms frames (320 samples at 16kHz)
-  audioChunkBuffer.push(pcm16)
+  // --- maintain pre-roll buffer (always) ---
+  preRollBuffer.push(pcm16)
+  preRollSamples += pcm16.length
+  while (preRollSamples > PRE_ROLL_SAMPLES_16K && preRollBuffer.length > 0) {
+    const head = preRollBuffer[0]
+    const overflow = preRollSamples - PRE_ROLL_SAMPLES_16K
+    if (head.length <= overflow) {
+      preRollBuffer.shift()
+      preRollSamples -= head.length
+    } else {
+      // trim the head
+      preRollBuffer[0] = head.slice(overflow)
+      preRollSamples -= overflow
+      break
+    }
+  }
 
-  const targetSamples = 320 // 20ms at 16kHz
-  let totalSamples = audioChunkBuffer.reduce((sum, chunk) => sum + chunk.length, 0)
+  // --- VAD state machine ---
+  if (vadState === 'armed') {
+    if (rms >= VAD_START_THRESHOLD) {
+      vadState = 'maybe_speech'
+      speechCandidateStartedAtMs = now
+    }
+    return
+  }
 
-  while (totalSamples >= targetSamples) {
-    const chunk = extractChunk(targetSamples)
-    sendAudioChunk(chunk)
-    totalSamples = audioChunkBuffer.reduce((sum, chunk) => sum + chunk.length, 0)
+  if (vadState === 'maybe_speech') {
+    if (rms < VAD_STOP_THRESHOLD) {
+      // false start
+      vadState = 'armed'
+      speechCandidateStartedAtMs = 0
+      return
+    }
+
+    if (now - speechCandidateStartedAtMs >= VAD_MIN_SPEECH_MS) {
+      // confirmed speech -> start turn and flush pre-roll
+      startAudioTurn()
+      vadState = 'in_speech'
+      lastVoiceAtMs = now
+
+      // flush pre-roll into the streaming buffer
+      for (const chunk of preRollBuffer) {
+        queuePcmForStreaming(chunk)
+      }
+      // keep pre-roll rolling (optional). We'll keep it so next speech isn't clipped.
+    }
+    return
+  }
+
+  // in_speech
+  if (vadState === 'in_speech') {
+    if (rms >= VAD_STOP_THRESHOLD) {
+      lastVoiceAtMs = now
+    }
+
+    // stream current chunk
+    queuePcmForStreaming(pcm16)
+
+    // end turn after sustained silence
+    if (now - lastVoiceAtMs >= VAD_SILENCE_END_MS) {
+      endAudioTurn()
+      vadState = 'armed'
+      speechCandidateStartedAtMs = 0
+      lastVoiceAtMs = 0
+    }
   }
 }
 
@@ -577,6 +725,21 @@ function extractChunk(targetSamples: number): Int16Array {
   return result
 }
 
+function queuePcmForStreaming(pcm16: Int16Array) {
+  if (!client || !currentTurnId || !currentFlowId) return
+
+  audioChunkBuffer.push(pcm16)
+  bufferedSamples += pcm16.length
+
+  const targetSamples = 320 // 20ms at 16kHz
+
+  while (bufferedSamples >= targetSamples) {
+    const chunk = extractChunk(targetSamples)
+    bufferedSamples -= targetSamples
+    sendAudioChunk(chunk)
+  }
+}
+
 function sendAudioChunk(pcm16: Int16Array) {
   if (!client || !currentTurnId || !currentFlowId) return
 
@@ -604,87 +767,84 @@ function arrayBufferToBase64(buffer: Uint8Array): string {
   return btoa(binary)
 }
 
-function startMicLevelMeter() {
-  if (micLevelInterval) return
-
-  micLevelInterval = window.setInterval(() => {
-    if (callState.value !== 'listening' || !sourceNode) {
-      stopMicLevelMeter()
-      return
-    }
-
-    // Simple RMS calculation from last frame (approximation)
-    // In production, you'd compute this from actual audio buffer
-    micLevelPercent.value = Math.min(100, Math.random() * 60 + 20) // Placeholder
-  }, 50) // 20 fps
-}
-
-function stopMicLevelMeter() {
-  if (micLevelInterval) {
-    clearInterval(micLevelInterval)
-    micLevelInterval = null
-  }
-  micLevelPercent.value = 0
-}
-
 function endCall() {
   if (callState.value === 'idle') return
 
-  // Send audio_end
-  if (client && currentTurnId && currentFlowId) {
-    // Flush remaining buffer
-    if (audioChunkBuffer.length > 0) {
-      const remaining = new Int16Array(
-        audioChunkBuffer.reduce((sum, chunk) => sum + chunk.length, 0)
-      )
-      let offset = 0
-      for (const chunk of audioChunkBuffer) {
-        remaining.set(chunk, offset)
-        offset += chunk.length
-      }
-      if (remaining.length > 0) {
-        sendAudioChunk(remaining)
-      }
-    }
-
-    client.sendWithFlowId(
-      WsTypes.StudentAudioEnd,
-      {
-        sessionId: sessionMeta.value.sessionId,
-        turnId: currentTurnId,
-      },
-      { flowCorrelationId: currentFlowId }
-    )
+  // end any active speech turn
+  if (vadState === 'in_speech') {
+    endAudioTurn()
+  } else {
+    // also end if a turn exists for any reason
+    endAudioTurn()
   }
+
+  vadState = 'armed'
+  speechCandidateStartedAtMs = 0
+  lastVoiceAtMs = 0
+
+  preRollBuffer = []
+  preRollSamples = 0
 
   cleanupAudioPipeline()
   callState.value = 'idle'
-  currentTurnId = null
-  currentFlowId = null
-  audioChunkBuffer = []
 }
 
 function cleanupAudioPipeline() {
-  stopMicLevelMeter()
+  // 0) Reset UI + local state first (so UI stops immediately)
+  micLevelPercent.value = 0
+  smoothedRms = 0
 
-  if (workletNode) {
-    workletNode.disconnect()
-    workletNode = null
-  }
+  // VAD / pre-roll / buffering state (all are in-scope; no ts-ignore needed)
+  vadState = 'armed'
+  speechCandidateStartedAtMs = 0
+  lastVoiceAtMs = 0
 
-  if (sourceNode) {
-    sourceNode.disconnect()
-    sourceNode = null
-  }
+  preRollBuffer = []
+  preRollSamples = 0
 
-  if (audioContext) {
-    audioContext.close()
-    audioContext = null
-  }
+  audioChunkBuffer = []
+  bufferedSamples = 0
 
+  currentTurnId = null
+  currentFlowId = null
+
+  // 1) Stop mic tracks ASAP (releases hardware + reduces late callbacks)
   if (mediaStream) {
-    mediaStream.getTracks().forEach(track => track.stop())
+    try {
+      for (const track of mediaStream.getTracks()) track.stop()
+    } catch {}
     mediaStream = null
+  }
+
+  // 2) Detach callbacks (prevents late events hitting stale refs)
+  if (workletNode) {
+    try {
+      workletNode.port.onmessage = null as any
+    } catch {}
+  }
+
+  if (scriptNode) {
+    try {
+      scriptNode.onaudioprocess = null
+    } catch {}
+  }
+
+  // 3) Disconnect nodes (best-effort, isolate failures)
+  try { sourceNode?.disconnect() } catch {}
+  try { workletNode?.disconnect() } catch {}
+  try { scriptNode?.disconnect() } catch {}
+  try { silentGain?.disconnect() } catch {}
+
+  sourceNode = null
+  workletNode = null
+  scriptNode = null
+  silentGain = null
+
+  // 4) Close AudioContext last
+  if (audioContext) {
+    const ctx = audioContext
+    audioContext = null
+    try { void ctx.close() } catch {}
   }
 }
 
